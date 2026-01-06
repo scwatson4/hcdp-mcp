@@ -1,0 +1,2 @@
+[console_scripts]
+hcdp-mcp-server = hcdp_mcp_server.server:cli_main

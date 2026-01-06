@@ -1,0 +1,3 @@
+# Placeholder for Rainfall - Big Island Dec 2024
+# This would be a GeoTIFF file containing climate data
+# Parameters: {'name': 'Rainfall - Big Island Dec 2024', 'datatype': 'rainfall', 'date': '2024-12-15', 'extent': 'big_island'}

@@ -1,0 +1,341 @@
+Metadata-Version: 2.4
+Name: hcdp-mcp-server
+Version: 0.1.0
+Summary: Model Context Protocol server for Hawai'i Climate Data Portal API
+Author-email: HCDP MCP <hcdp@hawaii.edu>
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: mcp>=1.0.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: python-dotenv>=1.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
+Requires-Dist: black>=23.0.0; extra == "dev"
+Requires-Dist: ruff>=0.1.0; extra == "dev"
+
+# HCDP MCP Server
+
+A Model Context Protocol (MCP) server that provides seamless access to the Hawaii Climate Data Portal (HCDP) API for AI assistants like Claude Code and Cursor.
+
+## Overview
+
+The HCDP MCP Server enables AI assistants to query climate and weather data for Hawaii and American Samoa directly through the Model Context Protocol. This allows for natural language climate data analysis, visualization, and research workflows.
+
+### Features
+
+- **🌧️ Climate Raster Data** - Access rainfall, temperature, humidity maps and time series
+- **📊 Station Data** - Query meteorological station information and measurements  
+- **🌡️ Mesonet Data** - Real-time weather station measurements
+- **📦 Data Packages** - Generate downloadable climate data archives
+- **🗺️ Time Series Analysis** - Extract data for specific coordinates and time ranges
+
+## Quick Start
+
+### 1. Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/hcdp-mcp.git
+cd hcdp-mcp
+
+# Install the package
+pip install -e .
+
+# Or install from PyPI (when available)
+pip install hcdp-mcp-server
+```
+
+### 2. Get HCDP API Token
+
+1. Visit the [Hawaii Climate Data Portal](https://www.hcdp.ikewai.org/)
+2. Create an account or log in
+3. Navigate to your profile/API settings to generate a token
+
+### 3. Configure Environment
+
+```bash
+# Copy example environment file
+cp .env.example .env
+
+# Edit .env with your API token
+HCDP_API_TOKEN=your_token_here
+HCDP_BASE_URL=https://api.hcdp.ikewai.org
+```
+
+### 4. Test Installation
+
+```bash
+# Test the MCP server
+hcdp-mcp-server
+```
+
+## Desktop Application Integration
+
+### Claude Code Configuration
+
+Add to your Claude Code MCP settings (`~/.claude/mcp_servers.json`):
+
+```json
+{
+  "mcpServers": {
+    "hcdp": {
+      "command": "hcdp-mcp-server",
+      "env": {
+        "HCDP_API_TOKEN": "your_token_here"
+      }
+    }
+  }
+}
+```
+
+**Alternative: Using Environment File**
+
+If you prefer to use the `.env` file approach:
+
+```json
+{
+  "mcpServers": {
+    "hcdp": {
+      "command": "hcdp-mcp-server",
+      "cwd": "/path/to/hcdp-mcp"
+    }
+  }
+}
+```
+
+### Cursor Configuration  
+
+Add to your Cursor MCP settings (`.cursor/mcp_servers.json` in your project or global settings):
+
+```json
+{
+  "mcpServers": {
+    "hcdp-climate-data": {
+      "command": "hcdp-mcp-server",
+      "env": {
+        "HCDP_API_TOKEN": "your_token_here"
+      },
+      "args": []
+    }
+  }
+}
+```
+
+### Visual Studio Code with MCP Extension
+
+If using VS Code with an MCP extension, add to `settings.json`:
+
+```json
+{
+  "mcp.servers": {
+    "hcdp": {
+      "command": "hcdp-mcp-server",
+      "env": {
+        "HCDP_API_TOKEN": "your_token_here"
+      }
+    }
+  }
+}
+```
+
+## Available Tools
+
+### `get_climate_raster`
+Retrieve climate data maps (GeoTIFF files) for rainfall, temperature, etc.
+
+**Required Parameters:**
+- `datatype`: Climate variable (e.g., 'rainfall', 'temp_mean', 'temp_min', 'temp_max')
+- `date`: Date in YYYY-MM-DD format
+- `extent`: Spatial extent (e.g., 'statewide', 'oahu', 'big_island')
+
+**Optional Parameters:**
+- `location`: 'hawaii' or 'american_samoa' (default: 'hawaii')
+- `production`: Production level for rainfall data
+- `aggregation`: Temporal aggregation for temperature data
+- `timescale`: Timescale for SPI data
+- `period`: Period specification
+
+### `get_timeseries_data`
+Get time series climate data for specific coordinates.
+
+**Required Parameters:**
+- `datatype`: Climate variable
+- `start`: Start date (YYYY-MM-DD)
+- `end`: End date (YYYY-MM-DD)  
+- `extent`: Spatial extent
+
+**Optional Parameters:**
+- `lat`, `lng`: Latitude/longitude coordinates
+- `location`: Geographic location
+- `production`, `aggregation`, `timescale`, `period`: Data specifications
+
+### `get_station_data`
+Query meteorological station information.
+
+**Required Parameters:**
+- `q`: MongoDB-style query (e.g., '{}' for all stations, '{"name": "Honolulu"}' for specific)
+
+**Optional Parameters:**
+- `limit`: Maximum number of results
+- `offset`: Pagination offset
+
+### `get_mesonet_data`
+Access real-time weather station measurements.
+
+**Optional Parameters:**
+- `station_ids`: Comma-separated station IDs
+- `start_date`, `end_date`: Date range
+- `var_ids`: Variable IDs to retrieve
+- `location`: Geographic location
+- `limit`, `offset`: Pagination
+- `join_metadata`: Include station metadata (default: true)
+
+### `generate_data_package`
+Create downloadable zip packages of climate data.
+
+**Required Parameters:**
+- `email`: Email address for delivery
+- `datatype`: Climate data type
+
+**Optional Parameters:**
+- `production`, `period`, `extent`: Data specifications
+- `start_date`, `end_date`: Date range
+- `files`: Specific files to include
+- `zipName`: Custom archive name
+
+## Usage Examples
+
+Once configured in your AI assistant, you can use natural language queries like:
+
+```
+"Get rainfall data for Oahu on January 1st, 2023"
+
+"Show me temperature time series for coordinates 21.3, -157.8 from 2022 to 2023"
+
+"Find all weather stations in Hawaii"
+
+"Create a data package with rainfall data for the Big Island in 2023"
+```
+
+The AI assistant will automatically use the appropriate HCDP MCP tools to fulfill these requests.
+
+## Supported Data Types
+
+### Climate Variables
+- **rainfall** - Precipitation data
+- **temp_mean** - Mean temperature
+- **temp_min** - Minimum temperature  
+- **temp_max** - Maximum temperature
+- **rh** - Relative humidity
+- **spi** - Standardized Precipitation Index
+- **ndvi** - Normalized Difference Vegetation Index
+- **ignition_probability** - Fire weather data
+
+### Geographic Extents
+- **statewide** - All Hawaiian islands
+- **oahu** - Oahu island
+- **big_island** - Hawaii (Big Island)
+- **maui** - Maui island
+- **kauai** - Kauai island
+- **molokai** - Molokai island
+- **lanai** - Lanai island
+
+### Locations
+- **hawaii** - Main Hawaiian islands (default)
+- **american_samoa** - American Samoa territory
+
+## Development
+
+### Setup Development Environment
+
+```bash
+# Install with development dependencies
+pip install -e ".[dev]"
+
+# Run tests
+pytest
+
+# Format code
+black hcdp_mcp_server/
+ruff check hcdp_mcp_server/
+
+# Run MCP server in development mode
+python -m hcdp_mcp_server.server
+```
+
+### Project Structure
+
+```
+hcdp-mcp/
+├── hcdp_mcp_server/
+│   ├── __init__.py
+│   ├── server.py          # MCP server implementation
+│   └── client.py          # HCDP API client
+├── tests/                 # Test suite
+├── .env.example          # Environment template
+├── pyproject.toml        # Project configuration
+└── README.md
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**1. API Token Issues**
+```bash
+# Verify token is set
+echo $HCDP_API_TOKEN
+
+# Test token validity
+curl -H "Authorization: Bearer $HCDP_API_TOKEN" https://api.hcdp.ikewai.org/stations?q={}&limit=1
+```
+
+**2. MCP Server Not Found**
+```bash
+# Verify installation
+which hcdp-mcp-server
+
+# Check if package is installed
+pip list | grep hcdp-mcp-server
+```
+
+**3. Connection Timeouts**
+- HCDP API responses can be slow for large datasets
+- Consider using smaller date ranges or specific extents
+- Check your internet connection
+
+**4. Invalid Parameters**
+- Ensure dates are in YYYY-MM-DD format
+- Check that datatype values match supported climate variables
+- Verify extent values are valid for your location
+
+### Getting Help
+
+1. Check the [HCDP API Documentation](https://hcdp.github.io/hcdp_api_docs/)
+2. Review the test files in the `tests/` directory for usage examples
+3. Enable debug logging by setting `HCDP_DEBUG=true` in your environment
+4. File issues on the [GitHub repository](https://github.com/yourusername/hcdp-mcp/issues)
+
+## Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Add tests for new functionality
+5. Run the test suite (`pytest`)
+6. Format your code (`black hcdp_mcp_server/`)
+7. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- [Hawaii Climate Data Portal](https://www.hcdp.ikewai.org/) for providing climate data access
+- [Model Context Protocol](https://modelcontextprotocol.io/) for the integration framework
+- [Anthropic](https://anthropic.com/) for Claude and the MCP specification

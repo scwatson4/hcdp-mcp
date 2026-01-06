@@ -1,0 +1,11 @@
+{
+  "mcp.servers": {
+    "hcdp": {
+      "command": "hcdp-mcp-server",
+      "env": {
+        "HCDP_API_TOKEN": "your_token_here"
+      },
+      "description": "Hawaii Climate Data Portal integration"
+    }
+  }
+}

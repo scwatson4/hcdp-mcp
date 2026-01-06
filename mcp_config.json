@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hcdp": {
+      "command": "hcdp-mcp-server",
+      "cwd": "/home/tswetnam/github/hcdp-mcp",
+      "description": "Hawaii Climate Data Portal - Access climate and weather data for Hawaii and American Samoa"
+    }
+  }
+}
