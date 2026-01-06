@@ -47,6 +47,8 @@ HCDP_API_TOKEN=your_token_here
 HCDP_BASE_URL=https://api.hcdp.ikewai.org
 ```
 
+**⚠️ Security Note:** Never commit your `.env` file to version control. It contains sensitive API credentials.
+
 ### 4. Test Installation
 
 ```bash
@@ -58,7 +60,20 @@ hcdp-mcp-server
 
 ### Claude Code Configuration
 
-Add to your Claude Code MCP settings (`~/.claude/mcp_servers.json`):
+**Method 1: Using MCP Add Command (Recommended)**
+
+The easiest way to set up the HCDP MCP server with Claude Code:
+
+```bash
+# Add the MCP server to Claude Code
+claude mcp add hcdp
+
+# This will automatically configure the server in your Claude settings
+```
+
+**Method 2: Manual Configuration**
+
+Add to your Claude Code MCP settings (`~/.config/claude-code/mcp_servers.json`):
 
 ```json
 {
@@ -67,13 +82,14 @@ Add to your Claude Code MCP settings (`~/.claude/mcp_servers.json`):
       "command": "hcdp-mcp-server",
       "env": {
         "HCDP_API_TOKEN": "your_token_here"
-      }
+      },
+      "description": "Hawaii Climate Data Portal - Access climate and weather data for Hawaii and American Samoa"
     }
   }
 }
 ```
 
-**Alternative: Using Environment File**
+**Method 3: Using Environment File**
 
 If you prefer to use the `.env` file approach:
 
@@ -82,7 +98,8 @@ If you prefer to use the `.env` file approach:
   "mcpServers": {
     "hcdp": {
       "command": "hcdp-mcp-server",
-      "cwd": "/path/to/hcdp-mcp"
+      "cwd": "/path/to/hcdp-mcp",
+      "description": "Hawaii Climate Data Portal - Access climate and weather data for Hawaii and American Samoa"
     }
   }
 }
@@ -256,10 +273,16 @@ hcdp-mcp/
 │   ├── __init__.py
 │   ├── server.py          # MCP server implementation
 │   └── client.py          # HCDP API client
-├── tests/                 # Test suite
-├── .env.example          # Environment template
-├── pyproject.toml        # Project configuration
-└── README.md
+├── tests/                 # Test suite and example scripts
+│   ├── test_*.py         # Unit tests
+│   └── download_*.py     # Example download scripts
+├── sample_data/          # Sample data files (.tiff, .csv)
+├── .env.example          # Environment template (copy to .env)
+├── .gitignore           # Git ignore patterns
+├── mcp_config.json      # MCP server configuration example
+├── pyproject.toml       # Project configuration
+├── CLAUDE.md           # Claude Code instructions
+└── README.md           # This file
 ```
 
 ## Troubleshooting
@@ -298,8 +321,10 @@ pip list | grep hcdp-mcp-server
 
 1. Check the [HCDP API Documentation](https://hcdp.github.io/hcdp_api_docs/)
 2. Review the test files in the `tests/` directory for usage examples
-3. Enable debug logging by setting `HCDP_DEBUG=true` in your environment
-4. File issues on the [GitHub repository](https://github.com/yourusername/hcdp-mcp/issues)
+3. Check the example scripts in `tests/download_*.py` for practical usage
+4. Review `CLAUDE.md` for development guidelines and commands
+5. Enable debug logging by setting `HCDP_DEBUG=true` in your environment
+6. File issues on the [GitHub repository](https://github.com/yourusername/hcdp-mcp/issues)
 
 ## Contributing
 
