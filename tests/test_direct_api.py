@@ -25,31 +25,30 @@ async def test_hcdp_api():
             production="new",
             period="month"
         )
-        print("✓ Success! Rainfall data retrieved")
+        print("SUCCESS! Rainfall data retrieved")
         print(f"Response type: {type(result)}")
         if isinstance(result, dict):
             print(f"Keys: {list(result.keys())}")
             
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"ERROR: {e}")
         
     # Test temperature data 
     try:
-        print(f"\n2. Testing temperature data for February 2022, Big Island:")
+        print(f"\n2. Testing temperature data for November 2024, Statewide:")
         result = await client.get_raster_data(
             datatype="temp_mean",
-            date="2022-02",
-            extent="bi", 
-            production="new",
-            period="month"
+            date="2024-11",
+            extent="statewide", 
+            aggregation="month"  # Temperature uses 'aggregation', not 'production'
         )
-        print("✓ Success! Temperature data retrieved")
+        print("SUCCESS! Temperature data retrieved")
         print(f"Response type: {type(result)}")
         if isinstance(result, dict):
             print(f"Keys: {list(result.keys())}")
             
     except Exception as e:
-        print(f"✗ Error: {e}")
+        print(f"ERROR: {e}")
 
 if __name__ == "__main__":
     asyncio.run(test_hcdp_api())

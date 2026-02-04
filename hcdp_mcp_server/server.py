@@ -14,18 +14,18 @@ from mcp.types import (
     ImageContent,
     EmbeddedResource,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from .client import HCDPClient
 
 
 class GetClimateRasterArgs(BaseModel):
     """Arguments for getting climate raster data."""
-    datatype: str = Field(description="Climate data type (e.g., 'rainfall', 'temp_mean', 'temp_min', 'temp_max', 'rh')")
-    date: str = Field(description="Date in YYYY-MM-DD format")
-    extent: str = Field(description="Spatial extent (e.g., 'statewide', 'oahu', 'big_island')")
+    datatype: str = Field(description="Climate variable: 'rainfall' (or 'precipitation'), 'temp_mean' (or 'temperature', 'mean temperature'), 'temp_min' (minimum temperature), 'temp_max' (maximum temperature), 'rh' (relative humidity)")
+    date: str = Field(description="Date in YYYY-MM format (e.g., '2024-01' for January 2024, '2022-02' for February 2022). Use current/recent dates for latest data.")
+    extent: str = Field(description="Spatial extent code: 'bi' (Big Island/Hawaii County), 'oa' (Oahu/Honolulu County), 'ka' (Kauai County), 'mn' (Maui County), or 'statewide' (all islands)")
     location: str = Field(default="hawaii", description="Location ('hawaii' or 'american_samoa')")
-    production: str | None = Field(default=None, description="Production level (for rainfall data)")
-    aggregation: str | None = Field(default=None, description="Temporal aggregation (for temperature data)")
+    production: str | None = Field(default=None, description="Production level for RAINFALL only. Use 'new' for recent/preliminary data, 'final' for validated data. Required for rainfall queries.")
+    aggregation: str | None = Field(default=None, description="Temporal aggregation for TEMPERATURE data. Use 'month' for monthly averages. Required for temperature queries.")
     timescale: str | None = Field(default=None, description="Timescale (for SPI data)")
     period: str | None = Field(default=None, description="Period specification")
 
@@ -35,14 +35,24 @@ class GetTimeseriesArgs(BaseModel):
     datatype: str = Field(description="Climate data type")
     start: str = Field(description="Start date in YYYY-MM-DD format")
     end: str = Field(description="End date in YYYY-MM-DD format")
-    extent: str = Field(description="Spatial extent")
-    lat: float | None = Field(default=None, description="Latitude coordinate (optional)")
-    lng: float | None = Field(default=None, description="Longitude coordinate (optional)")
+    extent: str = Field(description="Spatial extent code: 'bi' (Big Island/Hawaii County), 'oa' (Oahu/Honolulu County), 'ka' (Kauai County), 'mn' (Maui County), or 'statewide' (all islands)")
+    lat: float | str | None = Field(default=None, description="Latitude coordinate (optional)")
+    lng: float | str | None = Field(default=None, description="Longitude coordinate (optional)")
     location: str = Field(default="hawaii", description="Location ('hawaii' or 'american_samoa')")
     production: str | None = Field(default=None, description="Production level (optional)")
     aggregation: str | None = Field(default=None, description="Temporal aggregation (optional)")
     timescale: str | None = Field(default=None, description="Timescale (optional)")
     period: str | None = Field(default=None, description="Period specification (optional)")
+
+    @field_validator('lat', 'lng', mode='before')
+    @classmethod
+    def convert_to_float(cls, v):
+        """Convert string coordinates to floats."""
+        if v is None or v == '':
+            return None
+        if isinstance(v, str):
+            return float(v)
+        return v
 
 
 class GetStationDataArgs(BaseModel):
@@ -138,12 +148,34 @@ async def handle_list_tools() -> list[Tool]:
     return [
         Tool(
             name="get_climate_raster",
-            description="Retrieve climate data maps (GeoTIFF files) for specified variables, dates, and locations from HCDP",
+            description="""Retrieve climate raster data (GeoTIFF maps) from HCDP.
+            
+            Use this for queries like:
+            - 'Get rainfall data for Big Island in February 2022'
+            - 'Show me temperature data for Oahu last month'
+            - 'Download precipitation map for statewide Hawaii'
+            
+            Key parameters:
+            - datatype: 'rainfall' (requires production='new' and period='month'), 'temp_mean'/'temp_min'/'temp_max' (requires aggregation='month'), 'rh' (relative humidity)
+            - extent: Use 'bi' (Big Island), 'oa' (Oahu), 'ka' (Kauai), 'mn' (Maui County), or 'statewide'
+            - date: YYYY-MM format (e.g., '2024-01')
+            """,
             inputSchema=GetClimateRasterArgs.model_json_schema(),
         ),
         Tool(
             name="get_timeseries_data", 
-            description="Get time series climate data for a specific latitude/longitude coordinate",
+            description="""Get time series climate data for specific coordinates.
+            
+            Use this for queries like:
+            - 'Get rainfall timeseries for Hilo (19.7167, -155.0833) for 2024'
+            - 'Show monthly rainfall at coordinates 21.3, -157.8 for last year'
+            
+            Key parameters:
+            - lat/lng: Decimal coordinates (e.g., 19.7167, -155.0833)
+            - start/end: YYYY-MM-DD format
+            - For rainfall: add production='new' and period='month'
+            - extent: Use 'oa' (Oahu), 'bi' (Big Island), 'ka' (Kauai), 'mn' (Maui County), or 'statewide'. Match extent to coordinate location.
+            """,
             inputSchema=GetTimeseriesArgs.model_json_schema(),
         ),
         Tool(
@@ -188,12 +220,28 @@ async def handle_list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_mesonet_stations",
-            description="Get mesonet weather station information and metadata",
+            description="""List available mesonet weather stations in Hawaii.
+            
+            Use this for queries like:
+            - 'Show me all weather stations in Hawaii'
+            - 'List mesonet stations'
+            - 'What weather stations are available?'
+            
+            Returns station metadata including location, elevation, and available variables.
+            """,
             inputSchema=GetMesonetStationsArgs.model_json_schema(),
         ),
         Tool(
             name="get_mesonet_variables",
-            description="Get mesonet variable definitions and metadata",
+            description="""List available weather measurement variables from mesonet stations.
+            
+            Use this for queries like:
+            - 'What weather variables can I measure?'
+            - 'Show me available mesonet data types'
+            - 'What measurements do weather stations collect?'
+            
+            Returns variables like temperature, humidity, wind speed, rainfall, etc.
+            """,
             inputSchema=GetMesonetVariablesArgs.model_json_schema(),
         ),
         Tool(

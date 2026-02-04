@@ -9,7 +9,13 @@ hcdp_mcp_server.egg-info/dependency_links.txt
 hcdp_mcp_server.egg-info/entry_points.txt
 hcdp_mcp_server.egg-info/requires.txt
 hcdp_mcp_server.egg-info/top_level.txt
+tests/test_all_endpoints.py
 tests/test_api_compliance.py
 tests/test_client.py
+tests/test_direct_api.py
+tests/test_endpoints_focused.py
 tests/test_integration.py
+tests/test_mcp_tools.py
 tests/test_server.py
+tests/test_updated_endpoints.py
+tests/test_working_tools.py
