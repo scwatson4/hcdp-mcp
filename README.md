@@ -46,7 +46,7 @@ cp .env.example .env
 HCDP_API_TOKEN=your_token_here
 HCDP_BASE_URL=https://api.hcdp.ikewai.org
 ```
-
+Show
 **⚠️ Security Note:** Never commit your `.env` file to version control. It contains sensitive API credentials.
 
 ### 4. Test Installation
