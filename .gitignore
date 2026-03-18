@@ -4,7 +4,7 @@
 .env.production
 .env.test
 
-# Claude Code configuration and instructions
+# Claude Code configuration and instructions (personal overrides not committed)
 .claude/
 CLAUDE.md
 
@@ -69,5 +69,10 @@ MANIFEST
 !sample_data/*.tiff
 !sample_data/*.csv
 !sample_data/*.json
+!.mcp.json
+# Allow project-level Claude settings (personal overrides go in settings.local.json)
+!.claude/
+.claude/*
+!.claude/settings.json
 
 resources/*
