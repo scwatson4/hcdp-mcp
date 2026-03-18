@@ -1,7 +1,8 @@
 {
   "mcpServers": {
     "hcdp": {
-      "command": "hcdp-mcp-server"
+      "command": ".venv/Scripts/python",
+      "args": ["-m", "hcdp_mcp_server"]
     }
   }
 }
