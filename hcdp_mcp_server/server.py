@@ -1543,3 +1543,7 @@ async def export_mesonet_csv_via_email(params: ExportMesonetCsvViaEmailArgs) -> 
 def cli_main():
     """Entry point for the hcdp-mcp-server CLI command."""
     mcp.run()
+
+
+if __name__ == "__main__":
+    cli_main()
