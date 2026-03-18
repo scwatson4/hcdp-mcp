@@ -207,50 +207,34 @@ class GetMesonetDataArgs(BaseModel):
 
     var_ids: str = Field(
         ...,
-        description=(
-            "Comma-separated Mesonet variable IDs. "
-            "Use get_mesonet_variables to discover valid IDs. "
-            "Examples: 'RF_1_Tot300s', 'Tair_1_Avg', 'RH_1_Avg,WS_1_Avg,VPD_1_Avg'"
-        ),
+        description="Comma-separated Mesonet variable IDs (e.g. 'Tair_1_Avg,RH_1_Avg'). Use get_mesonet_variables to discover IDs.",
     )
     start_date: Optional[str] = Field(
         default=None,
-        description=(
-            "ISO 8601 date string. Formats: YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss-10:00. "
-            "Mesonet data available from ~2023 onward."
-        ),
+        description="ISO 8601 start date (YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss-10:00). Data from ~2023 onward.",
     )
     end_date: Optional[str] = Field(
         default=None,
-        description="ISO 8601 end date string (inclusive).",
+        description="ISO 8601 end date (inclusive).",
     )
     station_ids: Optional[str] = Field(
         default=None,
-        description=(
-            "Comma-separated 4-digit station IDs (e.g. '0502,0521'). "
-            "Use get_mesonet_stations to discover IDs."
-        ),
+        description="Comma-separated 4-digit station IDs (e.g. '0502,0521'). Use get_mesonet_stations to find IDs.",
     )
     limit: int = Field(
         default=10000,
         ge=1,
         le=1000000,
-        description=(
-            "Max records per page. API default is 10,000; max is 1,000,000. "
-            "For Code Mode pagination loops, use date ranges instead of high limits."
-        ),
+        description="Max records per page (default 10,000; max 1,000,000).",
     )
     offset: int = Field(
         default=0,
         ge=0,
-        description="Records to skip for pagination. Use with limit.",
+        description="Records to skip for pagination.",
     )
     join_metadata: Optional[str] = Field(
         default="true",
-        description=(
-            "If any value provided, station and variable metadata is included per row. "
-            "Pass 'true' to enable (API checks presence, not value)."
-        ),
+        description="Pass 'true' to include station/variable metadata per row.",
     )
     flags: Optional[str] = Field(
         default=None,
@@ -258,25 +242,19 @@ class GetMesonetDataArgs(BaseModel):
     )
     reverse: Optional[str] = Field(
         default=None,
-        description=(
-            "If any value provided, results are sorted oldest-first. "
-            "Default (None) returns most-recent-first."
-        ),
+        description="Pass any value to sort oldest-first (default is newest-first).",
     )
     local_tz: Optional[str] = Field(
         default=None,
-        description="If any value provided, timestamps are converted to Hawaii local time.",
+        description="Pass any value to convert timestamps to Hawaii local time.",
     )
     row_mode: Optional[str] = Field(
         default=None,
-        description=(
-            "Response row format. Options: 'array', 'wide_array', 'json', 'wide_json'. "
-            "Default (None) returns JSON array of objects."
-        ),
+        description="Row format: 'array', 'wide_array', 'json', 'wide_json'. Default returns JSON objects.",
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.JSON,
-        description="'json' for Code Mode programs, 'markdown' for human display.",
+        description="'json' for programmatic use, 'markdown' for display.",
     )
 
 
@@ -291,29 +269,12 @@ class GetMesonetDataArgs(BaseModel):
     },
 )
 async def get_mesonet_data(params: GetMesonetDataArgs) -> str:
-    """Fetch raw Mesonet station measurements with full pagination support.
+    """Fetch Mesonet station time-series measurements (~2023-present).
 
-    Returns time-series records for requested variables and date range.
-    Each record contains timestamp, station_id, variable, value, units,
-    and (if join_metadata set) station name, lat, lng, elevation.
-
-    PAGINATION: Check has_more in response. Use next_offset for subsequent pages.
-    For Code Mode programs handling long date ranges, prefer date-range slicing
-    over high offsets — date ranges are better optimized per the API spec.
-
-    DATA AVAILABILITY: Mesonet data available from ~2023 onward.
-    For pre-2023 historical data use get_island_climate_history or get_timeseries_data.
-
-    Args:
-        params (GetMesonetDataArgs): Validated input parameters.
-
-    Returns:
-        str: JSON with keys:
-            - records (list): measurement rows
-            - count (int): records in this page
-            - offset (int): current offset
-            - has_more (bool): whether more pages likely exist
-            - next_offset (int|null): offset for next page
+    Returns records with timestamp, station_id, variable, value, units, and
+    (if join_metadata set) station name, lat, lng, elevation.
+    Response includes has_more and next_offset for pagination.
+    For pre-2023 data use get_timeseries_data instead.
     """
     try:
         api_params: Dict[str, Any] = {
@@ -374,18 +335,15 @@ class GetMesonetStationsArgs(BaseModel):
 
     location: str = Field(
         default="hawaii",
-        description="Network location. Options: 'hawaii', 'american_samoa'.",
+        description="Network location: 'hawaii' or 'american_samoa'.",
     )
     status: Optional[str] = Field(
         default="active",
-        description=(
-            "Filter by station status client-side: 'active', 'inactive', 'planned', or null for all. "
-            "NOTE: This is a client-side filter — the API returns all stations regardless."
-        ),
+        description="Filter by status: 'active', 'inactive', 'planned', or null for all.",
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.JSON,
-        description="'json' for Code Mode programs, 'markdown' for human display.",
+        description="'json' for programmatic use, 'markdown' for display.",
     )
 
 
@@ -400,25 +358,10 @@ class GetMesonetStationsArgs(BaseModel):
     },
 )
 async def get_mesonet_stations(params: GetMesonetStationsArgs) -> str:
-    """List all Mesonet weather stations with metadata.
+    """List all Mesonet weather stations with station_id, name, lat, lng, elevation, status.
 
-    Returns station IDs, names, lat/lng, elevation, and status for all stations.
-    Use to discover station_ids for get_mesonet_data, or to find stations on a
-    specific island for get_nearest_stations.
-
-    Island bounding boxes for Code Mode filtering:
-      - Oahu:       lat 21.2-21.7,  lng -158.3 to -157.6
-      - Big Island: lat 18.9-20.3,  lng -156.1 to -154.8
-      - Maui:       lat 20.5-21.0,  lng -156.7 to -155.9
-      - Kauai:      lat 21.8-22.3,  lng -159.8 to -159.2
-
-    Args:
-        params (GetMesonetStationsArgs): Validated input parameters.
-
-    Returns:
-        str: JSON with keys:
-            - stations (list): station objects with station_id, name, lat, lng, elevation, status
-            - count (int): number of stations returned
+    Use to discover station_ids for get_mesonet_data or get_station_latest.
+    Status filter is applied client-side (API returns all stations).
     """
     try:
         data = await hcdp_get("/mesonet/db/stations", {"location": params.location})
@@ -454,7 +397,7 @@ class GetMesonetVariablesArgs(BaseModel):
 
     response_format: ResponseFormat = Field(
         default=ResponseFormat.JSON,
-        description="'json' for Code Mode programs, 'markdown' for human display.",
+        description="'json' for programmatic use, 'markdown' for display.",
     )
 
 
@@ -469,28 +412,11 @@ class GetMesonetVariablesArgs(BaseModel):
     },
 )
 async def get_mesonet_variables(params: GetMesonetVariablesArgs) -> str:
-    """List all measurable Mesonet weather variables with units and display names.
+    """List all Mesonet variable IDs with display names and units.
 
-    Returns the full variable catalog. Code Mode programs use this to map
-    user intent ('humidity') to the correct var_id ('RH_1_Avg') for get_mesonet_data.
-
-    Key variables for common queries:
-      - Rainfall 5-min:      RF_1_Tot300s   (mm)
-      - Rainfall hourly:     RF_1_Tot3600s  (mm)
-      - Rainfall daily:      RF_1_Tot86400s (mm)
-      - Temperature:         Tair_1_Avg     (degrees C)
-      - Relative Humidity:   RH_1_Avg       (%)
-      - Wind Speed:          WS_1_Avg       (m/s)
-      - Vapor Pressure Def:  VPD_1_Avg      (kPa)
-      - Fuel Moisture:       FM_1_Avg       (%)
-
-    Args:
-        params (GetMesonetVariablesArgs): Validated input parameters.
-
-    Returns:
-        str: JSON with keys:
-            - variables (list): variable objects with standard_name, display_name, units
-            - count (int)
+    Use to map intent to the correct var_id for get_mesonet_data.
+    Common: RF_1_Tot300s (rain 5-min), RF_1_Tot3600s (rain hourly),
+    Tair_1_Avg (temp °C), RH_1_Avg (humidity %), WS_1_Avg (wind m/s).
     """
     try:
         # No location param for this endpoint per spec
@@ -523,49 +449,31 @@ class GetIslandClimateHistoryArgs(BaseModel):
 
     islands: Union[IslandName, List[IslandName]] = Field(
         ...,
-        description=(
-            "Island or list of islands. "
-            "Single: 'oahu'. Multi: ['oahu','maui','big_island','kauai']. "
-            "Valid: 'oahu', 'big_island', 'maui', 'kauai', 'molokai', 'lanai'."
-        ),
+        description="Island or list: 'oahu', 'big_island', 'maui', 'kauai', 'molokai', 'lanai'.",
     )
     years: Union[int, List[int]] = Field(
         ...,
-        description=(
-            "Year or list of years. "
-            "Rainfall available: 1990-present (new) or 1920-2012 (legacy monthly). "
-            "Single: 2024. Multi: [2020,2021,2022,2023,2024]."
-        ),
+        description="Year or list of years (e.g. 2024 or [2020,2021,2022]).",
     )
     datatype: RasterDatatype = Field(
         ...,
-        description=(
-            "Raster climate variable. "
-            "Options: 'rainfall', 'temperature', 'relative_humidity', "
-            "'spi', 'ndvi_modis', 'ignition_probability'."
-        ),
+        description="Climate variable: 'rainfall', 'temperature', 'relative_humidity', 'spi', 'ndvi_modis', 'ignition_probability'.",
     )
     production: str = Field(
         default="new",
-        description=(
-            "Rainfall production method (only used when datatype='rainfall'). "
-            "'new' = 1990-present. 'legacy' = 1920-2012 monthly only."
-        ),
+        description="Rainfall production: 'new' (1990-present) or 'legacy' (1920-2012 monthly).",
     )
     aggregation: Optional[TempAggregation] = Field(
         default=None,
-        description=(
-            "Temperature aggregation (only used when datatype='temperature'). "
-            "Options: 'min', 'max', 'mean'."
-        ),
+        description="Temperature aggregation: 'min', 'max', or 'mean'. Required when datatype='temperature'.",
     )
     period: Period = Field(
         default=Period.MONTH,
-        description="Aggregation period: 'month' (default) or 'day'.",
+        description="Aggregation period: 'month' or 'day'.",
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.JSON,
-        description="'json' for Code Mode programs, 'markdown' for human/chatbot display.",
+        description="'json' for programmatic use, 'markdown' for display.",
     )
 
 
@@ -647,34 +555,11 @@ async def _fetch_single_island_year(
     },
 )
 async def get_island_climate_history(params: GetIslandClimateHistoryArgs) -> str:
-    """Fetch historical climate data for one or more Hawaiian islands across one or more years.
+    """Fetch historical raster climate data for one or more islands and years in parallel.
 
-    Returns regional breakdowns with island_wide_average per year per island.
-    Accepts arrays for both islands and years — all combinations fetched in parallel.
-    A single call replaces what previously required 20 sequential calls (4 islands x 5 years).
-
-    Internally calls /raster/timeseries for each representative regional point.
-    Rainfall data available from 1990 (new) or 1920 (legacy monthly).
-
-    DO NOT use for real-time conditions — use get_station_latest instead.
-
-    Code Mode example (statewide 5-year drought analysis in one call):
-        result = get_island_climate_history(
-            islands=["oahu","maui","big_island","kauai"],
-            years=[2020,2021,2022,2023,2024],
-            datatype="rainfall"
-        )
-        # Returns 20 island-year records. Compute SPI locally. Write to Postgres.
-
-    Args:
-        params (GetIslandClimateHistoryArgs): Validated input parameters.
-
-    Returns:
-        str: JSON with keys:
-            - results (list): one entry per island-year with island_wide_average,
-              regional_breakdown (avg/min/max/data_points per region), coverage_note
-            - total_combinations (int)
-            - missing_data (list): island-year pairs with no data
+    Returns island_wide_average and regional_breakdown per island-year combination.
+    Rainfall available from 1990 (new) or 1920 (legacy monthly).
+    Not for real-time data — use get_station_latest for current conditions.
     """
     try:
         island_list = [params.islands] if isinstance(params.islands, str) else list(params.islands)
@@ -773,56 +658,39 @@ class GetTimeseriesArgs(BaseModel):
     lng: float = Field(..., ge=-161.0, le=-154.0, description="Longitude (Hawaii: -161.0 to -154.0).")
     datatype: RasterDatatype = Field(
         ...,
-        description=(
-            "Raster climate variable. Per YAML spec: "
-            "'rainfall', 'temperature', 'relative_humidity', "
-            "'spi', 'ndvi_modis', 'ignition_probability'."
-        ),
+        description="Climate variable: 'rainfall', 'temperature', 'relative_humidity', 'spi', 'ndvi_modis', 'ignition_probability'.",
     )
     start: str = Field(
         ...,
-        description=(
-            "ISO 8601 start date. Use YYYY-MM for monthly (e.g. '1920-01'). "
-            "Rainfall legacy data goes back to 1920-01."
-        ),
+        description="Start date. Use YYYY-MM for monthly (e.g. '1920-01'), YYYY-MM-DD for daily.",
     )
     end: str = Field(
         ...,
-        description="ISO 8601 end date (inclusive). Use YYYY-MM for monthly.",
+        description="End date (inclusive). Match format of start.",
     )
     extent: RasterExtent = Field(
         default=RasterExtent.STATEWIDE,
-        description=(
-            "Spatial extent of raster. Per spec: "
-            "'statewide', 'bi' (Big Island), 'ka' (Kauai), 'oa' (Oahu), 'mn' (Maui County). "
-            "Use 'statewide' if unsure."
-        ),
+        description="Raster extent: 'statewide', 'bi' (Big Island), 'ka' (Kauai), 'oa' (Oahu), 'mn' (Maui County).",
     )
     period: Period = Field(
         default=Period.MONTH,
-        description="Aggregation period: 'month' (default) or 'day'.",
+        description="Aggregation period: 'month' or 'day'.",
     )
     production: Optional[str] = Field(
         default="new",
-        description=(
-            "Rainfall production method (only for datatype='rainfall'). "
-            "'new' = 1990-present. 'legacy' = 1920-2012 monthly."
-        ),
+        description="Rainfall production: 'new' (1990-present) or 'legacy' (1920-2012 monthly).",
     )
     aggregation: Optional[TempAggregation] = Field(
         default=None,
-        description="Temperature aggregation (only for datatype='temperature'): 'min', 'max', 'mean'.",
+        description="Temperature aggregation: 'min', 'max', 'mean'. Required when datatype='temperature'.",
     )
     timescale: Optional[SpiTimescale] = Field(
         default=None,
-        description=(
-            "SPI evaluation timescale (only for datatype='spi'). "
-            "e.g. 'timescale001' (1 month), 'timescale012' (12 months)."
-        ),
+        description="SPI timescale (e.g. 'timescale001'=1mo, 'timescale012'=12mo). Required when datatype='spi'.",
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.JSON,
-        description="'json' for Code Mode programs, 'markdown' for human display.",
+        description="'json' for programmatic use, 'markdown' for display.",
     )
 
 
@@ -837,28 +705,11 @@ class GetTimeseriesArgs(BaseModel):
     },
 )
 async def get_timeseries_data(params: GetTimeseriesArgs) -> str:
-    """Fetch historical climate timeseries for a lat/lng point from raster data.
+    """Fetch historical raster timeseries for a lat/lng point (rainfall back to 1920).
 
-    The ONLY tool that accesses pre-2023 historical data (rainfall back to 1920
-    with 'legacy' production, or 1990 with 'new' production).
-
-    Date format note: use YYYY-MM for monthly (e.g. start='1920-01', end='2024-12').
-    Do NOT pass YYYY-MM-DD for monthly data — use YYYY-MM per spec examples.
-
-    Companion params (required for specific datatypes):
-      - datatype='rainfall'    -> production required ('new' or 'legacy')
-      - datatype='temperature' -> aggregation required ('min', 'max', 'mean')
-      - datatype='spi'         -> timescale required (e.g. 'timescale012')
-
-    Args:
-        params (GetTimeseriesArgs): Validated input parameters.
-
-    Returns:
-        str: JSON with keys:
-            - timeseries (dict|list): date-value pairs from API
-            - lat (float), lng (float), datatype (str), extent (str), period (str)
-            - count (int): number of data points
-            - mean (float), min (float), max (float): summary stats
+    Use YYYY-MM date format for monthly data (e.g. start='1990-01', end='2024-12').
+    Companion params: rainfall→production, temperature→aggregation, spi→timescale.
+    Returns date-value pairs plus summary stats (mean, min, max).
     """
     try:
         api_params: Dict[str, Any] = {
@@ -928,24 +779,15 @@ class GetStationLatestArgs(BaseModel):
 
     var_ids: Optional[str] = Field(
         default="RF_1_Tot300s,Tair_1_Avg,RH_1_Avg,WS_1_Avg,VPD_1_Avg",
-        description=(
-            "Comma-separated variable IDs to retrieve latest values for. "
-            "The stationMonitor endpoint returns the last value of each requested variable "
-            "for ALL active stations — filter by station_id client-side from the result. "
-            "Default covers the most common weather variables."
-        ),
+        description="Comma-separated variable IDs (default: rain, temp, humidity, wind, VPD).",
     )
     station_id: Optional[str] = Field(
         default=None,
-        description=(
-            "4-digit station ID to filter results client-side (e.g. '0502'). "
-            "NOTE: The /mesonet/db/stationMonitor API does not accept station_ids as a param — "
-            "this filter is applied after fetching all station data."
-        ),
+        description="4-digit station ID to filter results (e.g. '0502'). Omit for all stations.",
     )
     response_format: ResponseFormat = Field(
         default=ResponseFormat.JSON,
-        description="'json' for Code Mode programs, 'markdown' for human display.",
+        description="'json' for programmatic use, 'markdown' for display.",
     )
 
 
@@ -960,28 +802,11 @@ class GetStationLatestArgs(BaseModel):
     },
 )
 async def get_station_latest(params: GetStationLatestArgs) -> str:
-    """Fetch the most recent measurements for Mesonet stations (real-time snapshot).
+    """Fetch the most recent 24-hour readings for Mesonet stations (real-time snapshot).
 
-    Uses /mesonet/db/stationMonitor which returns a dict keyed by station ID.
-    Per the API spec, this endpoint only accepts 'location' and 'var_ids' params.
-    Station filtering is applied client-side after fetching.
-
-    The response contains 24hr_latest, 24hr_max, 24hr_min, 24hr_avg_diff per station.
-
-    To get data for a specific station, provide station_id to filter the response.
-    To get all active station snapshots, leave station_id as null.
-
-    Pair with get_nearest_stations to find station IDs for a location first.
-
-    Args:
-        params (GetStationLatestArgs): Validated input parameters.
-
-    Returns:
-        str: JSON with keys:
-            - stations (list): each containing station_id, 24hr_latest readings,
-              24hr_max, 24hr_min per variable
-            - count (int)
-            - timestamp_note (str)
+    Returns 24hr_latest, 24hr_max, 24hr_min per variable per station.
+    Provide station_id to filter to one station; omit for all stations.
+    Use get_nearest_stations first to find station IDs by location.
     """
     try:
         # Per YAML spec: stationMonitor only accepts location and var_ids
@@ -1086,26 +911,10 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     },
 )
 async def get_nearest_stations(params: GetNearestStationsArgs) -> str:
-    """Find the nearest active Mesonet stations to a given lat/lng point.
+    """Find the nearest active Mesonet stations to a lat/lng point, sorted by distance.
 
-    Geographic routing primitive. Use to translate place names to station_ids
-    for get_mesonet_data or get_station_latest.
-
-    Common Hawaii coordinates:
-      - Honolulu:       21.3069, -157.8583
-      - Hilo:           19.7297, -155.0900
-      - Kona:           19.6400, -155.9969
-      - Kahului (Maui): 20.8893, -156.4729
-      - Lihue (Kauai):  21.9811, -159.3711
-
-    Args:
-        params (GetNearestStationsArgs): Validated input parameters.
-
-    Returns:
-        str: JSON with keys:
-            - stations (list): sorted by distance_km, each with station_id, name,
-              lat, lng, elevation, distance_km, status
-            - query_lat (float), query_lng (float), count (int)
+    Use to translate place names to station_ids for get_mesonet_data or get_station_latest.
+    Returns station_id, name, lat, lng, elevation, distance_km per result.
     """
     try:
         data = await hcdp_get("/mesonet/db/stations", {"location": "hawaii"})
@@ -1187,21 +996,10 @@ class GetIslandComparisonArgs(BaseModel):
     },
 )
 async def get_island_comparison(params: GetIslandComparisonArgs) -> str:
-    """Fetch and rank climate data across all Hawaiian islands for a given year.
+    """Rank Hawaiian islands by a climate variable for a given year.
 
-    Returns a sorted comparison answering: 'Which island was driest in 2024?'
-
-    All island fetches run in parallel via get_island_climate_history.
-
-    Args:
-        params (GetIslandComparisonArgs): Validated input parameters.
-
-    Returns:
-        str: JSON with keys:
-            - year (int), datatype (str)
-            - ranked (list): sorted ascending by island_wide_average, each with
-              rank, island, island_wide_average, min, max, driest_region, wettest_region
-            - summary (str): human-readable one-liner
+    Answers: 'Which island was driest/wettest/hottest in 2024?'
+    Returns islands sorted by island_wide_average with driest/wettest region per island.
     """
     try:
         island_list = params.islands or [
@@ -1307,24 +1105,12 @@ class GetDroughtIndexArgs(BaseModel):
     },
 )
 async def get_drought_index(params: GetDroughtIndexArgs) -> str:
-    """Compute SPI (Standardized Precipitation Index) for one or more islands.
+    """Compute Standardized Precipitation Index (SPI) for one or more islands.
 
-    SPI = (observed - mean) / stddev over the reference period.
-
-    Interpretation: >= +2.0 extremely wet | +1.0 to +1.99 moderately wet |
-    -0.99 to +0.99 near normal | -1.0 to -1.49 moderate drought |
-    -1.5 to -1.99 severe drought | <= -2.0 extreme drought.
-
-    Fetches all data in one parallel call, computes SPI locally.
-
-    Args:
-        params (GetDroughtIndexArgs): Validated input parameters.
-
-    Returns:
-        str: JSON with keys:
-            - datatype (str), reference_period (list[int])
-            - results (list): per island — reference_mean, reference_stddev,
-              spi_by_year (year: {value, spi, interpretation}), trend
+    SPI = (observed - mean) / stddev over the reference years.
+    Interpretation: ≥2.0 extremely wet, ≥1.0 moderately wet, -1.0 to +1.0 near normal,
+    ≤-1.0 moderate drought, ≤-1.5 severe drought, ≤-2.0 extreme drought.
+    Returns spi_by_year with value, spi, interpretation, and trend per island.
     """
     try:
         island_list = (
@@ -1439,25 +1225,19 @@ class ExportMesonetCsvViaEmailArgs(BaseModel):
     var_ids: List[str] = Field(
         ...,
         min_length=1,
-        description=(
-            "List of variable IDs to export (e.g. ['RH_1_Min', 'Tair_2_Max']). "
-            "Use get_mesonet_variables to discover valid IDs."
-        ),
+        description="List of variable IDs to export (e.g. ['RH_1_Min', 'Tair_2_Max']).",
     )
     start_date: str = Field(
         ...,
-        description="ISO 8601 start datetime, e.g. '2025-04-01T00:00:00-10:00'.",
+        description="ISO 8601 start datetime (e.g. '2025-04-01T00:00:00-10:00').",
     )
     end_date: str = Field(
         ...,
-        description="ISO 8601 end datetime, e.g. '2025-05-01T00:00:00-10:00'.",
+        description="ISO 8601 end datetime (e.g. '2025-05-01T00:00:00-10:00').",
     )
     station_ids: Optional[List[str]] = Field(
         default=None,
-        description=(
-            "List of 4-digit station IDs to include (e.g. ['0145','0141','0115']). "
-            "If null, all active stations are included."
-        ),
+        description="List of 4-digit station IDs. Omit to include all active stations.",
     )
     output_name: Optional[str] = Field(
         default=None,
@@ -1476,38 +1256,10 @@ class ExportMesonetCsvViaEmailArgs(BaseModel):
     },
 )
 async def export_mesonet_csv_via_email(params: ExportMesonetCsvViaEmailArgs) -> str:
-    """Request a bulk CSV export of Mesonet data delivered to a specified email address.
+    """Request a bulk Mesonet CSV export delivered asynchronously to an email address.
 
-    Designed for climate scientists who need raw station data for offline analysis.
-    The HCDP API processes the request asynchronously and emails the CSV.
-
-    POSTs to /mesonet/db/measurements/email. The API processes the request
-    asynchronously and emails the CSV (wide format: columns timestamp, station_id, variables).
-    Returns 202 on success — the actual data arrives via email.
-
-    For Code Mode programs handling large date ranges: use this instead of
-    paginating get_mesonet_data hundreds of times. Call once, wait for email.
-
-    Request body format per YAML spec:
-      {
-        "email": "user@example.com",
-        "data": {
-          "location": "hawaii",
-          "station_ids": ["0145", "0141"],
-          "var_ids": ["RH_1_Min", "Tair_2_Max"],
-          "start_date": "2025-04-01T00:00:00-10:00",
-          "end_date": "2025-05-01T00:00:00-10:00"
-        }
-      }
-
-    Args:
-        params (ExportMesonetCsvViaEmailArgs): Validated input parameters.
-
-    Returns:
-        str: JSON with keys:
-            - status (int): 202 on success
-            - message (str): confirmation
-            - email_sent_to (str)
+    Use for large date ranges instead of paginating get_mesonet_data many times.
+    Returns 202 immediately; CSV arrives via email when processing completes.
     """
     try:
         data_spec: Dict[str, Any] = {
