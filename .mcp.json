@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "hcdp": {
-      "command": "/usr/local/bin/hcdp-mcp-server"
+      "command": "hcdp-mcp-server"
     }
   }
 }
