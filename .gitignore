@@ -69,3 +69,5 @@ MANIFEST
 !sample_data/*.tiff
 !sample_data/*.csv
 !sample_data/*.json
+
+resources/*
