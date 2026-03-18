@@ -1,957 +1,1545 @@
-"""HCDP MCP Server - Main server implementation."""
+"""HCDP MCP Server - Main server implementation (v2.0)."""
 
 import asyncio
-import base64
 import json
 import math
-from typing import Any, Sequence, Dict, List, Optional
-from datetime import datetime, timedelta
-from mcp.server import Server
-from mcp.server.models import InitializationOptions
-from mcp.server.lowlevel.server import NotificationOptions
-from mcp.server.stdio import stdio_server
-from mcp.types import (
-    Resource,
-    Tool,
-    TextContent,
-    ImageContent,
-    EmbeddedResource,
-)
-from pydantic import BaseModel, Field, field_validator
-from .client import HCDPClient
+import os
+from enum import Enum
+from typing import Any, Dict, List, Optional, Union
 
-# Constants for Location Data
-ISLAND_EXTENTS = {
-    "oahu": "oa",
+import httpx
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+load_dotenv()
+
+# ── Server ────────────────────────────────────────────────────────────────────
+mcp = FastMCP("hcdp_mcp")
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+HCDP_API_BASE   = os.environ.get("HCDP_BASE_URL", "https://api.hcdp.ikewai.org")
+HCDP_API_TOKEN  = os.environ.get("HCDP_API_TOKEN", "")
+REQUEST_TIMEOUT = 30.0
+
+# Representative lat/lng points per island (domain knowledge — not in API)
+ISLAND_REGIONS: Dict[str, List[Dict[str, Any]]] = {
+    "oahu": [
+        {"location": "Honolulu (South)",   "lat": 21.3069, "lng": -157.8583},
+        {"location": "Kaneohe (Windward)", "lat": 21.4022, "lng": -157.8025},
+        {"location": "Kapolei (Leeward)",  "lat": 21.3356, "lng": -158.0709},
+        {"location": "Wahiawa (Central)",  "lat": 21.5027, "lng": -158.0241},
+        {"location": "North Shore",        "lat": 21.6389, "lng": -158.0617},
+    ],
+    "big_island": [
+        {"location": "Hilo (East/Wet)",        "lat": 19.7297, "lng": -155.0900},
+        {"location": "Kona (West/Dry)",         "lat": 19.6400, "lng": -155.9969},
+        {"location": "Volcano (Highland/Wet)",  "lat": 19.4328, "lng": -155.2835},
+        {"location": "South Point",             "lat": 18.9109, "lng": -155.6831},
+        {"location": "Waimea (Upcountry)",      "lat": 20.0211, "lng": -155.6694},
+    ],
+    "maui": [
+        {"location": "Kahului (Central)",  "lat": 20.8893, "lng": -156.4729},
+        {"location": "Hana (East/Wet)",    "lat": 20.7579, "lng": -155.9894},
+        {"location": "Lahaina (West/Dry)", "lat": 20.8783, "lng": -156.6825},
+        {"location": "Kula (Upcountry)",   "lat": 20.7644, "lng": -156.3322},
+    ],
+    "kauai": [
+        {"location": "Lihue (East)",        "lat": 21.9811, "lng": -159.3711},
+        {"location": "Poipu (South)",       "lat": 21.8722, "lng": -159.4681},
+        {"location": "Princeville (North)", "lat": 22.2161, "lng": -159.4814},
+        {"location": "Waimea (West)",       "lat": 21.9567, "lng": -159.6667},
+        {"location": "Kokee (Mountain)",    "lat": 22.1167, "lng": -159.6333},
+    ],
+    "molokai": [
+        {"location": "Kaunakakai (Central)", "lat": 21.0894, "lng": -157.0222},
+        {"location": "East Molokai",          "lat": 21.1333, "lng": -156.7500},
+    ],
+    "lanai": [
+        {"location": "Lanai City",  "lat": 20.8283, "lng": -156.9200},
+        {"location": "Shipwreck",   "lat": 20.9000, "lng": -156.8333},
+    ],
+}
+
+# Maps human-friendly datatype names → Mesonet var_ids (for get_mesonet_data)
+MESONET_DATATYPE_VAR_MAP: Dict[str, str] = {
+    "rainfall":    "RF_1_Tot3600s",
+    "temperature": "Tair_1_Avg",
+    "humidity":    "RH_1_Avg",
+    "wind_speed":  "WS_1_Avg",
+    "vpd":         "VPD_1_Avg",
+}
+
+# Maps island names → raster extent codes (for /raster/timeseries)
+# Per YAML: extent enum is [statewide, bi, ka, oa, mn]
+ISLAND_EXTENT_MAP: Dict[str, str] = {
+    "oahu":       "oa",
     "big_island": "bi",
-    "maui": "mn",
-    "kauai": "ka",
-    "molokai": "mn",
-    "lanai": "mn",
-    "statewide": "statewide"
+    "maui":       "mn",   # Maui County (includes Molokai/Lanai)
+    "kauai":      "ka",
+    "molokai":    "mn",   # Maui County
+    "lanai":      "mn",   # Maui County
 }
 
-CITY_LOCATIONS = {
-    # Main Hawaiian Islands
-    "honolulu": {"lat": 21.3069, "lng": -157.8583, "island": "oahu"},
-    "hilo": {"lat": 19.7241, "lng": -155.0868, "island": "big_island"},
-    "kona": {"lat": 19.6393, "lng": -155.9969, "island": "big_island"},
-    "kahului": {"lat": 20.8893, "lng": -156.4729, "island": "maui"},
-    "lihue": {"lat": 21.9811, "lng": -159.3711, "island": "kauai"},
-    "kaunakakai": {"lat": 21.0905, "lng": -157.0226, "island": "molokai"},
-    "lanai_city": {"lat": 20.8264, "lng": -156.9182, "island": "lanai"},
-    # American Samoa
-    "pago_pago": {"lat": -14.2794, "lng": -170.7006, "island": "tutuila"}
-}
 
-ISLAND_REPRESENTATIVE_POINTS = {
-    "oahu": {
-        "Honolulu (South)": {"lat": 21.3069, "lng": -157.8583},
-        "Kaneohe (Windward)": {"lat": 21.4111, "lng": -157.7967},
-        "Kapolei (Leeward)": {"lat": 21.3358, "lng": -158.0561},
-        "Wahiawa (Central)": {"lat": 21.5028, "lng": -158.0236},
-        "North Shore": {"lat": 21.5956, "lng": -158.1070}
-    },
-    "big_island": {
-        "Hilo (East/Wet)": {"lat": 19.7241, "lng": -155.0868},
-        "Kona (West/Dry)": {"lat": 19.6393, "lng": -155.9969},
-        "Waimea (Upcountry)": {"lat": 20.0201, "lng": -155.6677},
-        "Volcano (Highland/Wet)": {"lat": 19.4315, "lng": -155.2323},
-        "South Point": {"lat": 18.9136, "lng": -155.6793}
-    },
-    "maui": {
-        "Kahului (Central)": {"lat": 20.8893, "lng": -156.4729},
-        "Hana (East/Wet)": {"lat": 20.7575, "lng": -155.9884},
-        "Lahaina (West/Dry)": {"lat": 20.8783, "lng": -156.6825},
-        "Kula (Upcountry)": {"lat": 20.7922, "lng": -156.3267}
-    },
-    "kauai": {
-        "Lihue (East)": {"lat": 21.9811, "lng": -159.3711},
-        "Poipu (South)": {"lat": 21.8817, "lng": -159.4580},
-        "Princeville (North)": {"lat": 22.2201, "lng": -159.4831},
-        "Waimea (West)": {"lat": 21.9568, "lng": -159.6698},
-        "Kokee (Mountain)": {"lat": 22.1264, "lng": -159.6467}
-    },
-    "molokai": {
-        "Kaunakakai (South)": {"lat": 21.0905, "lng": -157.0226},
-        "Kualapuu (Central)": {"lat": 21.1611, "lng": -157.0683},
-        "Halawa (East)": {"lat": 21.1578, "lng": -156.7442}
-    },
-    "lanai": {
-        "Lanai City": {"lat": 20.8264, "lng": -156.9182},
-        "Manele (South)": {"lat": 20.7389, "lng": -156.8886}
-    },
-    "statewide": {
-        "Honolulu (Oahu)": {"lat": 21.3069, "lng": -157.8583},
-        "Hilo (Big Island)": {"lat": 19.7241, "lng": -155.0868},
-        "Kahului (Maui)": {"lat": 20.8893, "lng": -156.4729},
-        "Lihue (Kauai)": {"lat": 21.9811, "lng": -159.3711}
-    }
-}
-
-def calculate_distance(lat1, lon1, lat2, lon2):
-    """Calculate Haversine distance between two points in km."""
-    R = 6371  # Earth radius in km
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat/2) * math.sin(dlat/2) + \
-        math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
-        math.sin(dlon/2) * math.sin(dlon/2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    return R * c
-
-class GetClimateRasterArgs(BaseModel):
-    """Arguments for getting climate raster data."""
-    datatype: str = Field(description="Climate variable: 'rainfall' (or 'precipitation'), 'temp_mean' (or 'temperature', 'mean temperature'), 'temp_min' (minimum temperature), 'temp_max' (maximum temperature), 'rh' (relative humidity)")
-    date: str = Field(description="Date in YYYY-MM format (e.g., '2024-01' for January 2024, '2022-02' for February 2022). Use current/recent dates for latest data.")
-    extent: str = Field(description="Spatial extent code: 'bi' (Big Island/Hawaii County), 'oa' (Oahu/Honolulu County), 'ka' (Kauai County), 'mn' (Maui County), or 'statewide' (all islands)")
-    location: str = Field(default="hawaii", description="Location ('hawaii' or 'american_samoa')")
-    production: str | None = Field(default=None, description="Production level for RAINFALL only. Use 'new' for recent/preliminary data, 'final' for validated data. Required for rainfall queries.")
-    aggregation: str | None = Field(default=None, description="Temporal aggregation for TEMPERATURE data. Use 'month' for monthly averages. Required for temperature queries.")
-    timescale: str | None = Field(default=None, description="Timescale (for SPI data)")
-    period: str | None = Field(default=None, description="Period specification")
+# ── Shared enums ──────────────────────────────────────────────────────────────
+class ResponseFormat(str, Enum):
+    JSON     = "json"
+    MARKDOWN = "markdown"
 
 
-class GetTimeseriesArgs(BaseModel):
-    """Arguments for getting time series data."""
-    datatype: str = Field(description="Climate data type")
-    start: str = Field(description="Start date in YYYY-MM-DD format")
-    end: str = Field(description="End date in YYYY-MM-DD format")
-    extent: str = Field(description="Spatial extent code: 'bi' (Big Island/Hawaii County), 'oa' (Oahu/Honolulu County), 'ka' (Kauai County), 'mn' (Maui County), or 'statewide' (all islands)")
-    lat: float | str | None = Field(default=None, description="Latitude coordinate (optional)")
-    lng: float | str | None = Field(default=None, description="Longitude coordinate (optional)")
-    location: str = Field(default="hawaii", description="Location ('hawaii' or 'american_samoa')")
-    production: str | None = Field(default=None, description="Production level (optional)")
-    aggregation: str | None = Field(default=None, description="Temporal aggregation (optional)")
-    timescale: str | None = Field(default=None, description="Timescale (optional)")
-    period: str | None = Field(default=None, description="Period specification (optional)")
-
-    @field_validator('lat', 'lng', mode='before')
-    @classmethod
-    def convert_to_float(cls, v):
-        """Convert string coordinates to floats."""
-        if v is None or v == '':
-            return None
-        if isinstance(v, str):
-            return float(v)
-        return v
+class IslandName(str, Enum):
+    OAHU       = "oahu"
+    BIG_ISLAND = "big_island"
+    MAUI       = "maui"
+    KAUAI      = "kauai"
+    MOLOKAI    = "molokai"
+    LANAI      = "lanai"
 
 
-class GetStationDataArgs(BaseModel):
-    """Arguments for getting station data."""
-    q: str = Field(description="Query parameter for station search")
-    limit: int | None = Field(default=None, description="Limit number of results (optional)")
-    offset: int | None = Field(default=None, description="Offset for pagination (optional)")
+# Raster API datatypes — per YAML: [rainfall, temperature, relative_humidity, spi, ndvi_modis, ignition_probability]
+class RasterDatatype(str, Enum):
+    RAINFALL             = "rainfall"
+    TEMPERATURE          = "temperature"
+    RELATIVE_HUMIDITY    = "relative_humidity"
+    SPI                  = "spi"
+    NDVI_MODIS           = "ndvi_modis"
+    IGNITION_PROBABILITY = "ignition_probability"
 
 
-class GetMesonetDataArgs(BaseModel):
-    """Arguments for getting mesonet data."""
-    station_ids: str | None = Field(default=None, description="Comma-separated station IDs (optional)")
-    start_date: str | None = Field(default=None, description="Start date in YYYY-MM-DD format (optional)")
-    end_date: str | None = Field(default=None, description="End date in YYYY-MM-DD format (optional)")
-    var_ids: str | None = Field(default=None, description="Comma-separated variable IDs (optional)")
-    location: str = Field(default="hawaii", description="Location")
-    intervals: str | None = Field(default=None, description="Time intervals (optional)")
-    limit: int | None = Field(default=None, description="Limit number of results (optional)")
-    offset: int | None = Field(default=None, description="Offset for pagination (optional)")
-    join_metadata: bool = Field(default=True, description="Include metadata in results")
+# Mesonet-friendly datatype names (mapped to var_ids internally)
+class MesonetDatatype(str, Enum):
+    RAINFALL    = "rainfall"
+    TEMPERATURE = "temperature"
+    HUMIDITY    = "humidity"
+    WIND_SPEED  = "wind_speed"
+    VPD         = "vpd"
 
 
-class GenerateDataPackageEmailArgs(BaseModel):
-    """Arguments for generating data packages via email."""
-    email: str = Field(description="Email address for package delivery")
-    datatype: str = Field(description="Climate data type")
-    production: str | None = Field(default=None, description="Production level (optional)")
-    period: str | None = Field(default=None, description="Period specification (optional)")
-    extent: str | None = Field(default=None, description="Spatial extent (optional)")
-    start_date: str | None = Field(default=None, description="Start date (optional)")
-    end_date: str | None = Field(default=None, description="End date (optional)")
-    files: str | None = Field(default=None, description="Specific files to include (optional)")
-    zipName: str | None = Field(default=None, description="Custom zip file name (optional)")
+# Raster extent codes — per YAML enum
+class RasterExtent(str, Enum):
+    STATEWIDE  = "statewide"
+    BIG_ISLAND = "bi"
+    KAUAI      = "ka"
+    OAHU       = "oa"
+    MAUI       = "mn"
 
 
-class GenerateDataPackageInstantArgs(BaseModel):
-    """Arguments for generating instant data packages."""
-    email: str = Field(description="Email address for logging")
-    datatype: str = Field(description="Climate data type")
-    production: str | None = Field(default=None, description="Production level (optional)")
-    period: str | None = Field(default=None, description="Period specification (optional)")
-    extent: str | None = Field(default=None, description="Spatial extent (optional)")
-    start_date: str | None = Field(default=None, description="Start date (optional)")
-    end_date: str | None = Field(default=None, description="End date (optional)")
-    zipName: str | None = Field(default=None, description="Custom zip file name (optional)")
+# Temperature aggregation — per YAML enum [min, max, mean]
+class TempAggregation(str, Enum):
+    MIN  = "min"
+    MAX  = "max"
+    MEAN = "mean"
 
 
-class ListProductionFilesArgs(BaseModel):
-    """Arguments for listing production files."""
-    datatype: str = Field(description="Climate data type")
-    production: str | None = Field(default=None, description="Production level (optional)")
-    period: str | None = Field(default=None, description="Period specification (optional)")
-    extent: str | None = Field(default=None, description="Spatial extent (optional)")
+# SPI timescale — per YAML enum
+class SpiTimescale(str, Enum):
+    T001 = "timescale001"
+    T003 = "timescale003"
+    T006 = "timescale006"
+    T009 = "timescale009"
+    T012 = "timescale012"
+    T024 = "timescale024"
+    T036 = "timescale036"
+    T048 = "timescale048"
+    T060 = "timescale060"
 
 
-class RetrieveProductionFileArgs(BaseModel):
-    """Arguments for retrieving a production file."""
-    file_path: str = Field(description="Path to the file to retrieve")
+# Period — per YAML enum [month, day]
+class Period(str, Enum):
+    MONTH = "month"
+    DAY   = "day"
 
 
-class GetMesonetStationsArgs(BaseModel):
-    """Arguments for getting mesonet station info."""
-    location: str = Field(default="hawaii", description="Location")
+# ── Shared HTTP helpers ───────────────────────────────────────────────────────
+def _auth_headers() -> Dict[str, str]:
+    if HCDP_API_TOKEN:
+        return {"Authorization": f"Bearer {HCDP_API_TOKEN}"}
+    return {}
 
 
-class GetMesonetVariablesArgs(BaseModel):
-    """Arguments for getting mesonet variable definitions."""
-    location: str = Field(default="hawaii", description="Location")
-
-
-class GetMesonetStationMonitorArgs(BaseModel):
-    """Arguments for getting mesonet station monitoring data."""
-    location: str = Field(default="hawaii", description="Location")
-
-
-class GetIslandSummaryArgs(BaseModel):
-    """Arguments for island-wide weather summary."""
-    island: str = Field(description="Island name: 'oahu', 'big_island', 'maui', 'kauai', 'molokai', 'lanai'")
-    datatype: str = Field(description="Variable to summarize (e.g., 'temperature', 'rainfall', 'humidity')")
-
-
-class GetCityWeatherArgs(BaseModel):
-    """Arguments for city-specific weather."""
-    city: str = Field(description="City name: 'honolulu', 'hilo', 'kona', 'kahului', 'lihue', 'pago_pago'")
-    datatype: str = Field(description="Variable to retrieve (e.g., 'temperature', 'rainfall')")
-
-
-class CompareHistoryArgs(BaseModel):
-    """Arguments for comparing current vs historical weather."""
-    city: str = Field(description="City name: 'honolulu', 'hilo', 'kona', 'kahului', 'lihue', 'pago_pago'")
-    datatype: str = Field(description="Variable to compare (e.g., 'temperature', 'rainfall')")
-
-
-class GetIslandHistoryArgs(BaseModel):
-    """Arguments for island history summary."""
-    island: str = Field(description="Island name: 'oahu', 'big_island', 'maui', 'kauai', 'molokai', 'lanai'")
-    datatype: str = Field(description="Variable: 'rainfall', 'temperature'")
-    year: str = Field(description="Year to summarize, e.g. '2024'")
-
-
-class EmailMesonetMeasurementsArgs(BaseModel):
-    """Arguments for emailing mesonet measurements."""
-    email: str = Field(description="Email address for CSV delivery")
-    location: str = Field(default="hawaii", description="Location")
-    station_ids: str | None = Field(default=None, description="Comma-separated station IDs (optional)")
-    start_date: str | None = Field(default=None, description="Start date in YYYY-MM-DD format (optional)")
-    end_date: str | None = Field(default=None, description="End date in YYYY-MM-DD format (optional)")
-    var_ids: str | None = Field(default=None, description="Comma-separated variable IDs (optional)")
-    intervals: str | None = Field(default=None, description="Time intervals (optional)")
-
-
-app = Server("hcdp-mcp-server")
-
-
-@app.list_tools()
-async def handle_list_tools() -> list[Tool]:
-    """List available tools."""
-    return [
-        # Tool(
-        #     name="get_climate_raster",
-        #     description="""Retrieve climate raster data (GeoTIFF maps) from HCDP.
-        #     
-        #     Use this for queries like:
-        #     - 'Get rainfall data for Big Island in February 2022'
-        #     - 'Show me temperature data for Oahu last month'
-        #     - 'Download precipitation map for statewide Hawaii'
-        #     
-        #     Key parameters:
-        #     - datatype: 'rainfall' (requires production='new' and period='month'), 'temp_mean'/'temp_min'/'temp_max' (requires aggregation='month'), 'rh' (relative humidity)
-        #     - extent: Use 'bi' (Big Island), 'oa' (Oahu), 'ka' (Kauai), 'mn' (Maui County), or 'statewide'
-        #     - date: YYYY-MM format (e.g., '2024-01')
-        #     """,
-        #     inputSchema=GetClimateRasterArgs.model_json_schema(),
-        # ),
-        Tool(
-            name="get_timeseries_data", 
-            description="""Get time series climate data for specific coordinates.
-            
-            REQUIRED: You MUST provide 'lat' and 'lng' arguments.
-            DO NOT provide 'extent' (e.g., 'oa', 'bi') - this tool works on specific points only.
-            
-            Use this for: "History for Hilo", "Trends at 21.3, -157.8", "Temperature for Honolulu".
-            """,
-            inputSchema=GetTimeseriesArgs.model_json_schema(),
-        ),
-        Tool(
-            name="get_station_data",
-            description="Retrieve station-specific climate measurements and metadata",
-            inputSchema=GetStationDataArgs.model_json_schema(),
-        ),
-        Tool(
-            name="get_mesonet_data",
-            description="Access real-time weather station (mesonet) measurements",
-            inputSchema=GetMesonetDataArgs.model_json_schema(),
-        ),
-        # Tool(
-        #     name="generate_data_package_email",
-        #     description="Generate downloadable zip packages of climate data and email them",
-        #     inputSchema=GenerateDataPackageEmailArgs.model_json_schema(),
-        # ),
-        # Tool(
-        #     name="generate_data_package_instant_link",
-        #     description="Generate instant download links for climate data packages",
-        #     inputSchema=GenerateDataPackageInstantArgs.model_json_schema(),
-        # ),
-        # Tool(
-        #     name="generate_data_package_instant_content",
-        #     description="Generate instant download content for climate data packages",
-        #     inputSchema=GenerateDataPackageInstantArgs.model_json_schema(),
-        # ),
-        # Tool(
-        #     name="generate_data_package_splitlink",
-        #     description="Generate split download links for large climate data packages",
-        #     inputSchema=GenerateDataPackageInstantArgs.model_json_schema(),
-        # ),
-        # Tool(
-        #     name="list_production_files",
-        #     description="List available production climate data files",
-        #     inputSchema=ListProductionFilesArgs.model_json_schema(),
-        # ),
-        # Tool(
-        #     name="retrieve_production_file",
-        #     description="Retrieve a specific production climate data file",
-        #     inputSchema=RetrieveProductionFileArgs.model_json_schema(),
-        # ),
-        Tool(
-            name="get_island_current_summary",
-            description="""Get a weather summary for an entire island (Average/Min/Max).
-            
-            Aggregates real-time data from all active Mesonet stations on the island.
-            Use this for: "What's the average temperature on Oahu?" or "How much rain on Big Island?"
-            """,
-            inputSchema=GetIslandSummaryArgs.model_json_schema(),
-        ),
-        Tool(
-            name="get_city_current_weather",
-            description="""Get aggregated current weather for a specific city.
-            
-            Finds stations within ~15km of the city and averages their data.
-            Supported cities: Honolulu, Hilo, Kona, Kahului, Lihue, Kaunakakai, Lanai City, Pago Pago.
-            """,
-            inputSchema=GetCityWeatherArgs.model_json_schema(),
-        ),
-        Tool(
-            name="compare_current_vs_historical",
-            description="""Compare current weather to historical averages.
-            
-            Compares today's Mesonet data (city average) vs. historical Timeseries data (previous year, same month).
-            returns the difference (e.g., "+1.5C warmer than normal").
-            """,
-            inputSchema=CompareHistoryArgs.model_json_schema(),
-        ),
-        Tool(
-            name="get_island_history_summary",
-            description="""Get historical weather patterns for an entire island (Parallelized).
-            
-            Fetches history for ~5 representative locations (Windward, Leeward, Mauka, Makai) simultaneously.
-            Use this for: "Rainfall patterns for Oahu in 2024" or "Where was it hottest on Maui last year?"
-            """,
-            inputSchema=GetIslandHistoryArgs.model_json_schema(),
-        ),
-        Tool(
-            name="get_mesonet_stations",
-            description="""List available mesonet weather stations in Hawaii.
-            
-            Use this for queries like:
-            - 'Show me all weather stations in Hawaii'
-            - 'List mesonet stations'
-            - 'What weather stations are available?'
-            
-            Returns station metadata including location, elevation, and available variables.
-            """,
-            inputSchema=GetMesonetStationsArgs.model_json_schema(),
-        ),
-        Tool(
-            name="get_mesonet_variables",
-            description="""List available weather measurement variables from mesonet stations.
-            
-            Use this for queries like:
-            - 'What weather variables can I measure?'
-            - 'Show me available mesonet data types'
-            - 'What measurements do weather stations collect?'
-            
-            Returns variables like temperature, humidity, wind speed, rainfall, etc.
-            """,
-            inputSchema=GetMesonetVariablesArgs.model_json_schema(),
-        ),
-        # Tool(
-        #     name="get_mesonet_station_monitor",
-        #     description="Get mesonet station monitoring and status data",
-        #     inputSchema=GetMesonetStationMonitorArgs.model_json_schema(),
-        # ),
-        # Tool(
-        #     name="email_mesonet_measurements",
-        #     description="Email mesonet measurement data as CSV files",
-        #     inputSchema=EmailMesonetMeasurementsArgs.model_json_schema(),
-        # ),
-    ]
-
-
-@app.call_tool()
-async def handle_call_tool(name: str, arguments: dict) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
-    """Handle tool calls."""
-    client = HCDPClient()
-    
-    try:
-        # if name == "get_climate_raster":
-        #     args = GetClimateRasterArgs(**arguments)
-        #     result = await client.get_raster_data(
-        #         datatype=args.datatype,
-        #         date=args.date,
-        #         extent=args.extent,
-        #         location=args.location,
-        #         production=args.production,
-        #         aggregation=args.aggregation,
-        #         timescale=args.timescale,
-        #         period=args.period
-        #     )
-        #     
-        if name == "get_timeseries_data":
-            args = GetTimeseriesArgs(**arguments)
-            result = await client.get_timeseries_data(
-                datatype=args.datatype,
-                start=args.start,
-                end=args.end,
-                extent=args.extent,
-                lat=args.lat,
-                lng=args.lng,
-                location=args.location,
-                production=args.production,
-                aggregation=args.aggregation,
-                timescale=args.timescale,
-                period=args.period
-            )
-            
-        elif name == "get_station_data":
-            args = GetStationDataArgs(**arguments)
-            result = await client.get_station_data(
-                q=args.q,
-                limit=args.limit,
-                offset=args.offset
-            )
-            
-        elif name == "get_mesonet_data":
-            args = GetMesonetDataArgs(**arguments)
-            result = await client.get_mesonet_data(
-                station_ids=args.station_ids,
-                start_date=args.start_date,
-                end_date=args.end_date,
-                var_ids=args.var_ids,
-                location=args.location,
-                intervals=args.intervals,
-                limit=args.limit,
-                offset=args.offset,
-                join_metadata=args.join_metadata
-            )
-            
-        # elif name == "generate_data_package_email":
-        #     args = GenerateDataPackageEmailArgs(**arguments)
-        #     result = await client.generate_data_package_email(
-        #         email=args.email,
-        #         datatype=args.datatype,
-        #         production=args.production,
-        #         period=args.period,
-        #         extent=args.extent,
-        #         start_date=args.start_date,
-        #         end_date=args.end_date,
-        #         files=args.files,
-        #         zipName=args.zipName
-        #     )
-        #     
-        # elif name == "generate_data_package_instant_link":
-        #     args = GenerateDataPackageInstantArgs(**arguments)
-        #     result = await client.generate_data_package_instant_link(
-        #         email=args.email,
-        #         datatype=args.datatype,
-        #         production=args.production,
-        #         period=args.period,
-        #         extent=args.extent,
-        #         start_date=args.start_date,
-        #         end_date=args.end_date,
-        #         zipName=args.zipName
-        #     )
-        #     
-        # elif name == "generate_data_package_instant_content":
-        #     args = GenerateDataPackageInstantArgs(**arguments)
-        #     result = await client.generate_data_package_instant_content(
-        #         email=args.email,
-        #         datatype=args.datatype,
-        #         production=args.production,
-        #         period=args.period,
-        #         extent=args.extent,
-        #         start_date=args.start_date,
-        #         end_date=args.end_date,
-        #         zipName=args.zipName
-        #     )
-        #     
-        # elif name == "generate_data_package_splitlink":
-        #     args = GenerateDataPackageInstantArgs(**arguments)
-        #     result = await client.generate_data_package_splitlink(
-        #         email=args.email,
-        #         datatype=args.datatype,
-        #         production=args.production,
-        #         period=args.period,
-        #         extent=args.extent,
-        #         start_date=args.start_date,
-        #         end_date=args.end_date,
-        #         zipName=args.zipName
-        #     )
-        #     
-        # elif name == "list_production_files":
-        #     args = ListProductionFilesArgs(**arguments)
-        #     result = await client.list_production_files(
-        #         datatype=args.datatype,
-        #         production=args.production,
-        #         period=args.period,
-        #         extent=args.extent
-        #     )
-        #     
-        # elif name == "retrieve_production_file":
-        #     args = RetrieveProductionFileArgs(**arguments)
-        #     result = await client.retrieve_production_file(
-        #         file_path=args.file_path
-        #     )
-        #     
-        elif name == "get_mesonet_stations":
-            args = GetMesonetStationsArgs(**arguments)
-            result = await client.get_mesonet_stations(
-                location=args.location
-            )
-            
-        elif name == "get_mesonet_variables":
-            args = GetMesonetVariablesArgs(**arguments)
-            result = await client.get_mesonet_variables(
-                location=args.location
-            )
-            
-        # elif name == "get_mesonet_station_monitor":
-        #     args = GetMesonetStationMonitorArgs(**arguments)
-        #     result = await client.get_mesonet_station_monitor(
-        #         location=args.location
-        #     )
-        #     
-        # elif name == "email_mesonet_measurements":
-        #     args = EmailMesonetMeasurementsArgs(**arguments)
-        #     result = await client.email_mesonet_measurements(
-        #         email=args.email,
-        #         location=args.location,
-        #         station_ids=args.station_ids,
-        #         start_date=args.start_date,
-        #         end_date=args.end_date,
-        #         var_ids=args.var_ids,
-        #         intervals=args.intervals
-        #     )
-
-        elif name == "get_island_current_summary":
-            args = GetIslandSummaryArgs(**arguments)
-            # 1. Get all stations
-            stations = await client.get_mesonet_stations()
-            if "error" in stations:
-                raise ValueError(f"Failed to fetch stations: {stations['error']}")
-                
-            # 2. Filter by island
-            target_island = args.island.lower()
-            if target_island not in ISLAND_EXTENTS:
-                raise ValueError(f"Unknown island: {target_island}")
-                
-            # Simple bounding box filtering could be added here, but for now we'll imply coverage
-            # In a real implementation we'd filter by lat/lng bounds for each island
-            # For this MVP, we will request data for ALL stations and then filter results if needed
-            # But get_mesonet_data takes station_ids. Let's get station IDs first.
-            
-            # 3. Get list of station IDs
-            station_ids = []
-            matching_stations = 0
-            
-            # Since we can't easily map stations to islands by ID alone in the listing,
-            # we'll use a rough lat/lng bounding box or just fetch data for ALL and filter.
-            # But fetching data for 1000+ stations is slow.
-            # Let's use a known subset or just the top 50 reported by the API for now.
-            # OPTIMIZATION: In a real app we'd cache the station-to-island mapping.
-            # For this MVP, let's just get the first 50 available stations and check if they're on the island.
-            # Actually, `get_mesonet_stations` returns lat/lng. We can filter by bounding box!
-            
-            # Approximate Bounding Boxes (Lat Min, Lat Max, Lng Min, Lng Max)
-            BOUNDS = {
-                "oahu": (21.2, 21.8, -158.3, -157.6),
-                "big_island": (18.9, 20.3, -156.1, -154.8),
-                "maui": (20.5, 21.1, -156.7, -155.9),
-                "kauai": (21.8, 22.3, -159.8, -159.2),
-                "molokai": (21.0, 21.3, -157.3, -156.7),
-                "lanai": (20.7, 21.0, -157.0, -156.8)
-            }
-            
-            bounds = BOUNDS.get(target_island)
-            if not bounds:
-                # Fallback: Just take first 20 stations if bounds unknown (e.g. statewide)
-                station_ids = [s["station_id"] for s in stations[:20]]
-            else:
-                lat_min, lat_max, lng_min, lng_max = bounds
-                for s in stations:
-                    try:
-                        slat, slng = float(s["lat"]), float(s["lng"])
-                        if lat_min <= slat <= lat_max and lng_min <= slng <= lng_max:
-                            station_ids.append(s["station_id"])
-                    except:
-                        continue
-            
-            if not station_ids:
-                result = {"error": f"No stations found on {args.island}"}
-            else:
-                # Limit to 50 to avoid timeouts
-                station_ids = station_ids[:50]
-                
-                # 4. Fetch data
-                today = datetime.now().strftime("%Y-%m-%d")
-                measurements = await client.get_mesonet_data(
-                    station_ids=station_ids,
-                    start_date=today,
-                    end_date=today,
-                    var_ids=[args.datatype],
-                    limit=100
-                )
-                
-                vals = []
-                for m in measurements:
-                    if args.datatype in m:
-                        try:
-                            vals.append(float(m[args.datatype]))
-                        except:
-                            continue
-                
-                if not vals:
-                    result = {
-                        "island": args.island,
-                        "stations_checked": len(station_ids),
-                        "message": f"No recent data for {args.datatype} found"
-                    }
-                else:
-                    avg_val = sum(vals) / len(vals)
-                    result = {
-                        "island": args.island,
-                        "date": today,
-                        "datatype": args.datatype,
-                        "average": round(avg_val, 2),
-                        "min": min(vals),
-                        "max": max(vals),
-                        "station_count": len(vals),
-                        "note": "Averaged from active mesonet stations"
-                    }
-
-        elif name == "get_city_current_weather":
-            args = GetCityWeatherArgs(**arguments)
-            city_data = CITY_LOCATIONS.get(args.city.lower())
-            if not city_data:
-                raise ValueError(f"Unknown city: {args.city}")
-                
-            # 1. Get all stations
-            stations = await client.get_mesonet_stations()
-            
-            # 2. Find nearby stations
-            nearby_stations = []
-            for station in stations:
-                try:
-                    dist = calculate_distance(
-                        city_data["lat"], city_data["lng"],
-                        float(station["lat"]), float(station["lng"])
-                    )
-                    if dist <= 15:  # within 15km
-                        nearby_stations.append(station)
-                except (ValueError, KeyError, TypeError):
-                    continue
-            
-            if not nearby_stations:
-                result = {"error": f"No weather stations found within 15km of {args.city}"}
-            else:
-                # 3. Get data for these stations
-                station_ids = [s["station_id"] for s in nearby_stations]
-                # Use today's date
-                today = datetime.now().strftime("%Y-%m-%d")
-                
-                # Fetch data
-                measurements = await client.get_mesonet_data(
-                    station_ids=station_ids,
-                    start_date=today,
-                    end_date=today,
-                    var_ids=[args.datatype],
-                    limit=100
-                )
-                
-                # 4. Aggregation
-                vals = []
-                for m in measurements:
-                    if args.datatype in m:
-                        try:
-                            vals.append(float(m[args.datatype]))
-                        except:
-                            continue
-                            
-                if not vals:
-                    result = {
-                        "city": args.city,
-                        "stations_found": len(nearby_stations),
-                        "message": f"Found {len(nearby_stations)} stations but no recent data for {args.datatype}"
-                    }
-                else:
-                    avg_val = sum(vals) / len(vals)
-                    result = {
-                        "city": args.city,
-                        "date": today,
-                        "datatype": args.datatype,
-                        "average": round(avg_val, 2),
-                        "min": min(vals),
-                        "max": max(vals),
-                        "station_count": len(vals),
-                        "stations_used": station_ids
-                    }
-
-        elif name == "compare_current_vs_historical":
-            args = CompareHistoryArgs(**arguments)
-            # Re-use city logic to get current
-            city_data = CITY_LOCATIONS.get(args.city.lower())
-            if not city_data:
-                raise ValueError(f"Unknown city: {args.city}")
-                
-            # 1. Get Current Data (Logic similar to get_city_current_weather)
-            # Find nearby stations
-            stations = await client.get_mesonet_stations()
-            nearby_stations = []
-            for station in stations:
-                try:
-                    dist = calculate_distance(
-                        city_data["lat"], city_data["lng"],
-                        float(station["lat"]), float(station["lng"])
-                    )
-                    if dist <= 15:
-                        nearby_stations.append(station)
-                except:
-                    continue
-            
-            current_val = None
-            if nearby_stations:
-                station_ids = [s["station_id"] for s in nearby_stations]
-                today = datetime.now().strftime("%Y-%m-%d")
-                measurements = await client.get_mesonet_data(
-                    station_ids=station_ids,
-                    start_date=today,
-                    end_date=today,
-                    var_ids=[args.datatype],
-                    limit=100
-                )
-                vals = []
-                for m in measurements:
-                    if args.datatype in m:
-                        try:
-                            vals.append(float(m[args.datatype]))
-                        except:
-                            continue
-                if vals:
-                    current_val = sum(vals) / len(vals)
-
-            # 2. Get Historical Data (Timeseries for same month, previous year)
-            # We use the extent for the island the city is on
-            # And use the city coordinates
-            last_year = datetime.now().replace(year=datetime.now().year - 1)
-            start_date = last_year.replace(day=1).strftime("%Y-%m-%d")
-            # End date is end of that month
-            next_month = last_year.replace(day=28) + timedelta(days=4)
-            end_date = (next_month - timedelta(days=next_month.day)).strftime("%Y-%m-%d")
-            
-            # Timeseries params
-            ts_datatype = args.datatype
-            if args.datatype == "temperature": ts_datatype = "temp_mean"
-            if args.datatype == "precipitation": ts_datatype = "rainfall"
-            
-            historical_val = None
-            try:
-                # Use island extent code from city data
-                island_code = ISLAND_EXTENTS.get(city_data["island"], "statewide")
-                
-                # Fetch timeseries
-                ts_data = await client.get_timeseries_data(
-                    datatype=ts_datatype,
-                    start=start_date,
-                    end=end_date,
-                    lat=city_data["lat"],
-                    lng=city_data["lng"],
-                    extent=island_code,
-                    production="new" if ts_datatype == "rainfall" else None,
-                    aggregation="month" if ts_datatype != "rainfall" else None,
-                    period="month" if ts_datatype == "rainfall" else None
-                )
-                
-                if ts_data and len(ts_data) > 0:
-                    # Average the monthly values (should be just 1 for a month, but handle list)
-                    ts_vals = list(ts_data.values())
-                    historical_val = sum(ts_vals) / len(ts_vals)
-            except Exception as e:
-                print(f"Historical fetch failed: {e}")
-                
-            # 3. Compare
-            result = {
-                "city": args.city,
-                "datatype": args.datatype,
-                "current_value": round(current_val, 2) if current_val is not None else "No data",
-                "historical_avg": round(historical_val, 2) if historical_val is not None else "No data",
-                "historical_period": f"{start_date} to {end_date}",
-                "comparison": "N/A"
-            }
-            
-            if current_val is not None and historical_val is not None:
-                diff = current_val - historical_val
-                sign = "+" if diff > 0 else ""
-                result["comparison"] = f"{sign}{diff:.2f} difference from historical average"
-                result["details"] = f"Current ({round(current_val, 1)}) is {'higher' if diff > 0 else 'lower'} than historical ({round(historical_val, 1)})"
-
-        elif name == "get_island_history_summary":
-            args = GetIslandHistoryArgs(**arguments)
-            target_island = args.island.lower()
-            points = ISLAND_REPRESENTATIVE_POINTS.get(target_island)
-            
-            if not points:
-                raise ValueError(f"Unknown island or no representative points for: {args.island}")
-            
-            # Prepare arguments for parallel fetching
-            ts_datatype = args.datatype
-            production = "new" if ts_datatype == "rainfall" else None
-            aggregation = "month" if ts_datatype != "rainfall" else None
-            period = "month" if ts_datatype == "rainfall" else None
-            if ts_datatype == "temperature": ts_datatype = "temp_mean"
-            if ts_datatype == "precipitation": ts_datatype = "rainfall"
-
-            start_date = f"{args.year}-01-01"
-            end_date = f"{args.year}-12-31"
-            island_code = ISLAND_EXTENTS.get(target_island, "statewide")
-
-            # Create tasks (Parallel Fetching!)
-            tasks = []
-            location_names = []
-            
-            for loc_name, coords in points.items():
-                location_names.append(loc_name)
-                tasks.append(client.get_timeseries_data(
-                    datatype=ts_datatype,
-                    start=start_date,
-                    end=end_date,
-                    lat=coords["lat"],
-                    lng=coords["lng"],
-                    extent=island_code,
-                    production=production,
-                    aggregation=aggregation,
-                    period=period
-                ))
-            
-            # Execute all tasks in parallel
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Process results
-            point_summaries = []
-            all_vals = []
-            
-            for i, res in enumerate(results):
-                loc_name = location_names[i]
-                if isinstance(res, Exception):
-                    point_summaries.append({
-                        "location": loc_name, 
-                        "error": str(res)
-                    })
-                    continue
-                
-                if res and isinstance(res, dict) and len(res) > 0:
-                    try:
-                        vals = list(res.values())
-                        valid_vals = [v for v in vals if v is not None and v != -9999]
-                        if valid_vals:
-                            avg = sum(valid_vals) / len(valid_vals)
-                            point_summaries.append({
-                                "location": loc_name,
-                                "average": round(avg, 2),
-                                "min": min(valid_vals),
-                                "max": max(valid_vals),
-                                "data_points": len(valid_vals)
-                            })
-                            all_vals.extend(valid_vals)
-                        else:
-                            point_summaries.append({"location": loc_name, "message": "No valid data"})
-                    except Exception as e:
-                        point_summaries.append({"location": loc_name, "error": str(e)})
-                else:
-                    point_summaries.append({"location": loc_name, "message": "No data returned"})
-
-            # Island-wide aggregation
-            island_avg = None
-            if all_vals:
-                island_avg = sum(all_vals) / len(all_vals)
-                
-            result = {
-                "island": args.island,
-                "year": args.year,
-                "datatype": args.datatype,
-                "island_wide_average": round(island_avg, 2) if island_avg else "N/A",
-                "regional_breakdown": point_summaries
-            }
-            
-        else:
-            raise ValueError(f"Unknown tool: {name}")
-            
-        # Process the result to handle binary data
-        processed_result = result
-        if isinstance(result, dict) and "data" in result:
-             data_content = result["data"]
-             # Check if it's bytes
-             if isinstance(data_content, bytes):
-                 # Base64 encode binary data
-                 processed_result["data"] = base64.b64encode(data_content).decode('utf-8')
-                 processed_result["encoding"] = "base64"
-                 processed_result["media_type"] = "application/octet-stream"  # Generic binary
-                 
-                 # Try to guess specific type based on tool name
-                 if "raster" in name:
-                     processed_result["media_type"] = "image/tiff"
-                 elif "zip" in str(arguments.get("zipName", "")):
-                     processed_result["media_type"] = "application/zip"
-
-        return [TextContent(
-            type="text",
-            text=json.dumps(processed_result, indent=2, default=str)
-        )]
-        
-    except Exception as e:
-        return [TextContent(
-            type="text", 
-            text=f"Error calling HCDP API: {str(e)}"
-        )]
-
-
-async def main():
-    """Main entry point for the server."""
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="hcdp-mcp-server",
-                server_version="0.1.0",
-                capabilities=app.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={}
-                ),
-            ),
+async def hcdp_get(path: str, params: Dict[str, Any]) -> Any:
+    """GET request to HCDP API with auth and error handling."""
+    # Remove None values — HCDP rejects null params
+    clean = {k: v for k, v in params.items() if v is not None}
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        resp = await client.get(
+            f"{HCDP_API_BASE}{path}", params=clean, headers=_auth_headers()
         )
+    resp.raise_for_status()
+    return resp.json()
 
 
+async def hcdp_post(path: str, body: Dict[str, Any]) -> Any:
+    """POST request to HCDP API with JSON body and auth."""
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        resp = await client.post(
+            f"{HCDP_API_BASE}{path}",
+            json=body,
+            headers={**_auth_headers(), "Content-Type": "application/json"},
+        )
+    resp.raise_for_status()
+    # 202 responses return plain text confirmation
+    if resp.status_code == 202:
+        return {"status": 202, "message": resp.text}
+    return resp.json()
+
+
+def _handle_error(e: Exception) -> str:
+    """Consistent actionable error messages."""
+    if isinstance(e, httpx.HTTPStatusError):
+        code = e.response.status_code
+        msgs = {
+            400: "Bad request — check parameter values (dates, var_ids, extent, datatype).",
+            401: "Auth failed — check HCDP_API_TOKEN env var.",
+            404: "Not found — the requested resource does not exist.",
+            429: "Rate limited — wait before retrying.",
+        }
+        return json.dumps({"error": msgs.get(code, f"API error {code}."), "status": code})
+    if isinstance(e, httpx.TimeoutException):
+        return json.dumps({"error": "Request timed out. Try narrowing the date range."})
+    return json.dumps({"error": f"{type(e).__name__}: {e}"})
+
+
+# ── Tool 1: get_mesonet_data ──────────────────────────────────────────────────
+class GetMesonetDataArgs(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    var_ids: str = Field(
+        ...,
+        description=(
+            "Comma-separated Mesonet variable IDs. "
+            "Use get_mesonet_variables to discover valid IDs. "
+            "Examples: 'RF_1_Tot300s', 'Tair_1_Avg', 'RH_1_Avg,WS_1_Avg,VPD_1_Avg'"
+        ),
+    )
+    start_date: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO 8601 date string. Formats: YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss-10:00. "
+            "Mesonet data available from ~2023 onward."
+        ),
+    )
+    end_date: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 end date string (inclusive).",
+    )
+    station_ids: Optional[str] = Field(
+        default=None,
+        description=(
+            "Comma-separated 4-digit station IDs (e.g. '0502,0521'). "
+            "Use get_mesonet_stations to discover IDs."
+        ),
+    )
+    limit: int = Field(
+        default=10000,
+        ge=1,
+        le=1000000,
+        description=(
+            "Max records per page. API default is 10,000; max is 1,000,000. "
+            "For Code Mode pagination loops, use date ranges instead of high limits."
+        ),
+    )
+    offset: int = Field(
+        default=0,
+        ge=0,
+        description="Records to skip for pagination. Use with limit.",
+    )
+    join_metadata: Optional[str] = Field(
+        default="true",
+        description=(
+            "If any value provided, station and variable metadata is included per row. "
+            "Pass 'true' to enable (API checks presence, not value)."
+        ),
+    )
+    flags: Optional[str] = Field(
+        default=None,
+        description="Comma-separated data flag values to filter by.",
+    )
+    reverse: Optional[str] = Field(
+        default=None,
+        description=(
+            "If any value provided, results are sorted oldest-first. "
+            "Default (None) returns most-recent-first."
+        ),
+    )
+    local_tz: Optional[str] = Field(
+        default=None,
+        description="If any value provided, timestamps are converted to Hawaii local time.",
+    )
+    row_mode: Optional[str] = Field(
+        default=None,
+        description=(
+            "Response row format. Options: 'array', 'wide_array', 'json', 'wide_json'. "
+            "Default (None) returns JSON array of objects."
+        ),
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.JSON,
+        description="'json' for Code Mode programs, 'markdown' for human display.",
+    )
+
+
+@mcp.tool(
+    name="get_mesonet_data",
+    annotations={
+        "title": "Mesonet Time-Series Measurements",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_mesonet_data(params: GetMesonetDataArgs) -> str:
+    """Fetch raw Mesonet station measurements with full pagination support.
+
+    Returns time-series records for requested variables and date range.
+    Each record contains timestamp, station_id, variable, value, units,
+    and (if join_metadata set) station name, lat, lng, elevation.
+
+    PAGINATION: Check has_more in response. Use next_offset for subsequent pages.
+    For Code Mode programs handling long date ranges, prefer date-range slicing
+    over high offsets — date ranges are better optimized per the API spec.
+
+    DATA AVAILABILITY: Mesonet data available from ~2023 onward.
+    For pre-2023 historical data use get_island_climate_history or get_timeseries_data.
+
+    Args:
+        params (GetMesonetDataArgs): Validated input parameters.
+
+    Returns:
+        str: JSON with keys:
+            - records (list): measurement rows
+            - count (int): records in this page
+            - offset (int): current offset
+            - has_more (bool): whether more pages likely exist
+            - next_offset (int|null): offset for next page
+    """
+    try:
+        api_params: Dict[str, Any] = {
+            "location":      "hawaii",
+            "var_ids":       params.var_ids,
+            "limit":         params.limit,
+            "offset":        params.offset,
+            "join_metadata": params.join_metadata,
+            "start_date":    params.start_date,
+            "end_date":      params.end_date,
+            "station_ids":   params.station_ids,
+            "flags":         params.flags,
+            "reverse":       params.reverse,
+            "local_tz":      params.local_tz,
+            "row_mode":      params.row_mode,
+        }
+
+        data = await hcdp_get("/mesonet/db/measurements", api_params)
+        records = data if isinstance(data, list) else data.get("data", data)
+        count = len(records) if isinstance(records, list) else 0
+        has_more = count == params.limit
+        next_offset = params.offset + count if has_more else None
+
+        result = {
+            "records":     records,
+            "count":       count,
+            "offset":      params.offset,
+            "has_more":    has_more,
+            "next_offset": next_offset,
+        }
+
+        if params.response_format == ResponseFormat.MARKDOWN:
+            lines = [
+                f"## Mesonet Data — {count} records (offset {params.offset})",
+                f"**has_more:** {has_more} | **next_offset:** {next_offset}",
+                "",
+                "| Timestamp | Station | Variable | Value | Units |",
+                "|---|---|---|---|---|",
+            ]
+            for r in (records[:50] if isinstance(records, list) else []):
+                lines.append(
+                    f"| {r.get('timestamp','')} | {r.get('station_id','')} "
+                    f"| {r.get('variable','')} | {r.get('value','')} | {r.get('units','')} |"
+                )
+            if count > 50:
+                lines.append(f"_...{count - 50} more rows. Use JSON format for full data._")
+            return "\n".join(lines)
+
+        return json.dumps(result)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+# ── Tool 2: get_mesonet_stations ──────────────────────────────────────────────
+class GetMesonetStationsArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location: str = Field(
+        default="hawaii",
+        description="Network location. Options: 'hawaii', 'american_samoa'.",
+    )
+    status: Optional[str] = Field(
+        default="active",
+        description=(
+            "Filter by station status client-side: 'active', 'inactive', 'planned', or null for all. "
+            "NOTE: This is a client-side filter — the API returns all stations regardless."
+        ),
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.JSON,
+        description="'json' for Code Mode programs, 'markdown' for human display.",
+    )
+
+
+@mcp.tool(
+    name="get_mesonet_stations",
+    annotations={
+        "title": "Mesonet Station Metadata",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_mesonet_stations(params: GetMesonetStationsArgs) -> str:
+    """List all Mesonet weather stations with metadata.
+
+    Returns station IDs, names, lat/lng, elevation, and status for all stations.
+    Use to discover station_ids for get_mesonet_data, or to find stations on a
+    specific island for get_nearest_stations.
+
+    Island bounding boxes for Code Mode filtering:
+      - Oahu:       lat 21.2-21.7,  lng -158.3 to -157.6
+      - Big Island: lat 18.9-20.3,  lng -156.1 to -154.8
+      - Maui:       lat 20.5-21.0,  lng -156.7 to -155.9
+      - Kauai:      lat 21.8-22.3,  lng -159.8 to -159.2
+
+    Args:
+        params (GetMesonetStationsArgs): Validated input parameters.
+
+    Returns:
+        str: JSON with keys:
+            - stations (list): station objects with station_id, name, lat, lng, elevation, status
+            - count (int): number of stations returned
+    """
+    try:
+        data = await hcdp_get("/mesonet/db/stations", {"location": params.location})
+        stations = data if isinstance(data, list) else data.get("data", [])
+
+        # Client-side status filter (API does not support this param)
+        if params.status:
+            stations = [s for s in stations if s.get("status") == params.status]
+
+        if params.response_format == ResponseFormat.MARKDOWN:
+            lines = [
+                f"## Mesonet Stations ({len(stations)} {params.status or 'all'})",
+                "",
+                "| ID | Name | Lat | Lng | Elevation | Status |",
+                "|---|---|---|---|---|---|",
+            ]
+            for s in stations:
+                lines.append(
+                    f"| {s.get('station_id')} | {s.get('full_name', s.get('name'))} "
+                    f"| {s.get('lat')} | {s.get('lng')} | {s.get('elevation')}m | {s.get('status')} |"
+                )
+            return "\n".join(lines)
+
+        return json.dumps({"stations": stations, "count": len(stations)})
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+# ── Tool 3: get_mesonet_variables ─────────────────────────────────────────────
+class GetMesonetVariablesArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.JSON,
+        description="'json' for Code Mode programs, 'markdown' for human display.",
+    )
+
+
+@mcp.tool(
+    name="get_mesonet_variables",
+    annotations={
+        "title": "Mesonet Variable Definitions",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_mesonet_variables(params: GetMesonetVariablesArgs) -> str:
+    """List all measurable Mesonet weather variables with units and display names.
+
+    Returns the full variable catalog. Code Mode programs use this to map
+    user intent ('humidity') to the correct var_id ('RH_1_Avg') for get_mesonet_data.
+
+    Key variables for common queries:
+      - Rainfall 5-min:      RF_1_Tot300s   (mm)
+      - Rainfall hourly:     RF_1_Tot3600s  (mm)
+      - Rainfall daily:      RF_1_Tot86400s (mm)
+      - Temperature:         Tair_1_Avg     (degrees C)
+      - Relative Humidity:   RH_1_Avg       (%)
+      - Wind Speed:          WS_1_Avg       (m/s)
+      - Vapor Pressure Def:  VPD_1_Avg      (kPa)
+      - Fuel Moisture:       FM_1_Avg       (%)
+
+    Args:
+        params (GetMesonetVariablesArgs): Validated input parameters.
+
+    Returns:
+        str: JSON with keys:
+            - variables (list): variable objects with standard_name, display_name, units
+            - count (int)
+    """
+    try:
+        # No location param for this endpoint per spec
+        data = await hcdp_get("/mesonet/db/variables", {})
+        variables = data if isinstance(data, list) else data.get("data", [])
+
+        if params.response_format == ResponseFormat.MARKDOWN:
+            lines = [
+                f"## Mesonet Variables ({len(variables)} total)",
+                "",
+                "| var_id (standard_name) | Display Name | Units |",
+                "|---|---|---|",
+            ]
+            for v in variables:
+                if v.get("standard_name"):
+                    lines.append(
+                        f"| `{v['standard_name']}` | {v.get('display_name','')} | {v.get('units_plain','')} |"
+                    )
+            return "\n".join(lines)
+
+        return json.dumps({"variables": variables, "count": len(variables)})
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+# ── Tool 4: get_island_climate_history ────────────────────────────────────────
+class GetIslandClimateHistoryArgs(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    islands: Union[IslandName, List[IslandName]] = Field(
+        ...,
+        description=(
+            "Island or list of islands. "
+            "Single: 'oahu'. Multi: ['oahu','maui','big_island','kauai']. "
+            "Valid: 'oahu', 'big_island', 'maui', 'kauai', 'molokai', 'lanai'."
+        ),
+    )
+    years: Union[int, List[int]] = Field(
+        ...,
+        description=(
+            "Year or list of years. "
+            "Rainfall available: 1990-present (new) or 1920-2012 (legacy monthly). "
+            "Single: 2024. Multi: [2020,2021,2022,2023,2024]."
+        ),
+    )
+    datatype: RasterDatatype = Field(
+        ...,
+        description=(
+            "Raster climate variable. "
+            "Options: 'rainfall', 'temperature', 'relative_humidity', "
+            "'spi', 'ndvi_modis', 'ignition_probability'."
+        ),
+    )
+    production: str = Field(
+        default="new",
+        description=(
+            "Rainfall production method (only used when datatype='rainfall'). "
+            "'new' = 1990-present. 'legacy' = 1920-2012 monthly only."
+        ),
+    )
+    aggregation: Optional[TempAggregation] = Field(
+        default=None,
+        description=(
+            "Temperature aggregation (only used when datatype='temperature'). "
+            "Options: 'min', 'max', 'mean'."
+        ),
+    )
+    period: Period = Field(
+        default=Period.MONTH,
+        description="Aggregation period: 'month' (default) or 'day'.",
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.JSON,
+        description="'json' for Code Mode programs, 'markdown' for human/chatbot display.",
+    )
+
+
+async def _fetch_single_island_year(
+    island: str,
+    year: int,
+    datatype: str,
+    production: str,
+    aggregation: Optional[str],
+    period: str,
+) -> Dict[str, Any]:
+    """Fetch one island-year combination from /raster/timeseries. Called in parallel."""
+    # Per YAML spec: /raster/timeseries uses start/end (not start_date/end_date)
+    # and requires extent; uses datatype (not var_id); no fill param
+    extent = ISLAND_EXTENT_MAP.get(island, "statewide")
+    regions = ISLAND_REGIONS.get(island, [])
+    if not regions:
+        return {
+            "island": island, "year": year, "datatype": datatype,
+            "island_wide_average": None, "regional_breakdown": [],
+            "coverage_note": f"No representative regions defined for {island}.",
+        }
+
+    async def fetch_region(region: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            params: Dict[str, Any] = {
+                "lat":        region["lat"],
+                "lng":        region["lng"],
+                "start":      f"{year}-01",       # YYYY-MM format per spec
+                "end":        f"{year}-12",        # YYYY-MM format per spec
+                "datatype":   datatype,            # raster uses datatype, not var_id
+                "extent":     extent,              # required per spec
+                "period":     period,
+                "production": production,          # required for rainfall
+            }
+            if aggregation:
+                params["aggregation"] = aggregation
+            data = await hcdp_get("/raster/timeseries", params)
+            # Response is a JSON object with date keys and numeric values
+            if isinstance(data, dict):
+                values = [float(v) for v in data.values() if v is not None]
+            elif isinstance(data, list):
+                values = [float(v) for v in data if v is not None]
+            else:
+                return {"location": region["location"], "message": "Unexpected response format"}
+            if not values:
+                return {"location": region["location"], "message": "No data returned"}
+            return {
+                "location":    region["location"],
+                "average":     round(sum(values) / len(values), 3),
+                "min":         round(min(values), 3),
+                "max":         round(max(values), 3),
+                "data_points": len(values),
+            }
+        except Exception as ex:
+            return {"location": region["location"], "message": f"Error: {ex}"}
+
+    regional_results = await asyncio.gather(*[fetch_region(r) for r in regions])
+    valid = [r for r in regional_results if "average" in r]
+    island_wide = round(sum(r["average"] for r in valid) / len(valid), 3) if valid else None
+    return {
+        "island":              island,
+        "year":                year,
+        "datatype":            datatype,
+        "island_wide_average": island_wide,
+        "regional_breakdown":  list(regional_results),
+        "coverage_note":       None if valid else "No data returned for any region.",
+    }
+
+
+@mcp.tool(
+    name="get_island_climate_history",
+    annotations={
+        "title": "Island Climate History (Multi-Island, Multi-Year)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_island_climate_history(params: GetIslandClimateHistoryArgs) -> str:
+    """Fetch historical climate data for one or more Hawaiian islands across one or more years.
+
+    Returns regional breakdowns with island_wide_average per year per island.
+    Accepts arrays for both islands and years — all combinations fetched in parallel.
+    A single call replaces what previously required 20 sequential calls (4 islands x 5 years).
+
+    Internally calls /raster/timeseries for each representative regional point.
+    Rainfall data available from 1990 (new) or 1920 (legacy monthly).
+
+    DO NOT use for real-time conditions — use get_station_latest instead.
+
+    Code Mode example (statewide 5-year drought analysis in one call):
+        result = get_island_climate_history(
+            islands=["oahu","maui","big_island","kauai"],
+            years=[2020,2021,2022,2023,2024],
+            datatype="rainfall"
+        )
+        # Returns 20 island-year records. Compute SPI locally. Write to Postgres.
+
+    Args:
+        params (GetIslandClimateHistoryArgs): Validated input parameters.
+
+    Returns:
+        str: JSON with keys:
+            - results (list): one entry per island-year with island_wide_average,
+              regional_breakdown (avg/min/max/data_points per region), coverage_note
+            - total_combinations (int)
+            - missing_data (list): island-year pairs with no data
+    """
+    try:
+        island_list = [params.islands] if isinstance(params.islands, str) else list(params.islands)
+        year_list   = [params.years]   if isinstance(params.years, int)   else list(params.years)
+
+        # Normalise enum values to strings
+        island_strs  = [i.value if hasattr(i, "value") else i for i in island_list]
+        datatype_str = params.datatype.value if hasattr(params.datatype, "value") else params.datatype
+        agg_str      = params.aggregation.value if params.aggregation and hasattr(params.aggregation, "value") else params.aggregation
+
+        tasks = [
+            _fetch_single_island_year(island, year, datatype_str, params.production, agg_str, params.period.value)
+            for island in island_strs
+            for year in year_list
+        ]
+        results = await asyncio.gather(*tasks)
+
+        missing = [f"{r['island']}-{r['year']}" for r in results if r.get("island_wide_average") is None]
+        response = {
+            "results":            list(results),
+            "total_combinations": len(results),
+            "missing_data":       missing,
+        }
+
+        if params.response_format == ResponseFormat.MARKDOWN:
+            lines = [
+                f"## Island Climate History — {params.datatype.value}",
+                f"**Islands:** {', '.join(island_strs)} | **Years:** {', '.join(str(y) for y in year_list)}",
+                "",
+                "| Island | Year | Island-Wide Avg | Coverage |",
+                "|---|---|---|---|",
+            ]
+            for r in results:
+                avg  = f"{r['island_wide_average']:.2f}" if r["island_wide_average"] is not None else "—"
+                note = r.get("coverage_note") or "ok"
+                lines.append(f"| {r['island']} | {r['year']} | {avg} | {note} |")
+            if missing:
+                lines.append(f"\nMissing data for: {', '.join(missing)}")
+            return "\n".join(lines)
+
+        return json.dumps(response)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+# ── Tool 5: get_island_history_summary (deprecated alias) ────────────────────
+class GetIslandHistoryArgs(BaseModel):
+    """DEPRECATED: Use get_island_climate_history with array parameters instead."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    island: IslandName   = Field(..., description="Island name.")
+    year:   str          = Field(..., description="Year string e.g. '2024'.")
+    datatype: RasterDatatype = Field(..., description="Climate variable (raster datatype).")
+
+
+@mcp.tool(
+    name="get_island_history_summary",
+    annotations={
+        "title": "Island History Summary [DEPRECATED — use get_island_climate_history]",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_island_history_summary(params: GetIslandHistoryArgs) -> str:
+    """DEPRECATED: Use get_island_climate_history instead (accepts arrays, 20x more efficient).
+    Kept for backward compatibility only.
+    """
+    evolved = GetIslandClimateHistoryArgs(
+        islands=params.island,
+        years=int(params.year),
+        datatype=params.datatype,
+        response_format=ResponseFormat.JSON,
+    )
+    result_str = await get_island_climate_history(evolved)
+    result = json.loads(result_str)
+    if result.get("results"):
+        r = result["results"][0]
+        return json.dumps({
+            "island":              r["island"],
+            "year":                params.year,
+            "datatype":            r["datatype"],
+            "island_wide_average": r["island_wide_average"],
+            "regional_breakdown":  r["regional_breakdown"],
+        })
+    return result_str
+
+
+# ── Tool 6: get_timeseries_data ───────────────────────────────────────────────
+class GetTimeseriesArgs(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    lat: float = Field(..., ge=18.0, le=23.0, description="Latitude (Hawaii: 18.0-23.0).")
+    lng: float = Field(..., ge=-161.0, le=-154.0, description="Longitude (Hawaii: -161.0 to -154.0).")
+    datatype: RasterDatatype = Field(
+        ...,
+        description=(
+            "Raster climate variable. Per YAML spec: "
+            "'rainfall', 'temperature', 'relative_humidity', "
+            "'spi', 'ndvi_modis', 'ignition_probability'."
+        ),
+    )
+    start: str = Field(
+        ...,
+        description=(
+            "ISO 8601 start date. Use YYYY-MM for monthly (e.g. '1920-01'). "
+            "Rainfall legacy data goes back to 1920-01."
+        ),
+    )
+    end: str = Field(
+        ...,
+        description="ISO 8601 end date (inclusive). Use YYYY-MM for monthly.",
+    )
+    extent: RasterExtent = Field(
+        default=RasterExtent.STATEWIDE,
+        description=(
+            "Spatial extent of raster. Per spec: "
+            "'statewide', 'bi' (Big Island), 'ka' (Kauai), 'oa' (Oahu), 'mn' (Maui County). "
+            "Use 'statewide' if unsure."
+        ),
+    )
+    period: Period = Field(
+        default=Period.MONTH,
+        description="Aggregation period: 'month' (default) or 'day'.",
+    )
+    production: Optional[str] = Field(
+        default="new",
+        description=(
+            "Rainfall production method (only for datatype='rainfall'). "
+            "'new' = 1990-present. 'legacy' = 1920-2012 monthly."
+        ),
+    )
+    aggregation: Optional[TempAggregation] = Field(
+        default=None,
+        description="Temperature aggregation (only for datatype='temperature'): 'min', 'max', 'mean'.",
+    )
+    timescale: Optional[SpiTimescale] = Field(
+        default=None,
+        description=(
+            "SPI evaluation timescale (only for datatype='spi'). "
+            "e.g. 'timescale001' (1 month), 'timescale012' (12 months)."
+        ),
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.JSON,
+        description="'json' for Code Mode programs, 'markdown' for human display.",
+    )
+
+
+@mcp.tool(
+    name="get_timeseries_data",
+    annotations={
+        "title": "Historical Raster Timeseries (Point Query)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_timeseries_data(params: GetTimeseriesArgs) -> str:
+    """Fetch historical climate timeseries for a lat/lng point from raster data.
+
+    The ONLY tool that accesses pre-2023 historical data (rainfall back to 1920
+    with 'legacy' production, or 1990 with 'new' production).
+
+    Date format note: use YYYY-MM for monthly (e.g. start='1920-01', end='2024-12').
+    Do NOT pass YYYY-MM-DD for monthly data — use YYYY-MM per spec examples.
+
+    Companion params (required for specific datatypes):
+      - datatype='rainfall'    -> production required ('new' or 'legacy')
+      - datatype='temperature' -> aggregation required ('min', 'max', 'mean')
+      - datatype='spi'         -> timescale required (e.g. 'timescale012')
+
+    Args:
+        params (GetTimeseriesArgs): Validated input parameters.
+
+    Returns:
+        str: JSON with keys:
+            - timeseries (dict|list): date-value pairs from API
+            - lat (float), lng (float), datatype (str), extent (str), period (str)
+            - count (int): number of data points
+            - mean (float), min (float), max (float): summary stats
+    """
+    try:
+        api_params: Dict[str, Any] = {
+            "lat":      params.lat,
+            "lng":      params.lng,
+            "start":    params.start,            # YAML spec uses 'start' not 'start_date'
+            "end":      params.end,              # YAML spec uses 'end' not 'end_date'
+            "datatype": params.datatype.value,
+            "extent":   params.extent.value,     # required per spec
+            "period":   params.period.value,
+        }
+        # Conditional companion params per YAML spec
+        if params.datatype == RasterDatatype.RAINFALL and params.production:
+            api_params["production"] = params.production
+        if params.datatype == RasterDatatype.TEMPERATURE and params.aggregation:
+            api_params["aggregation"] = params.aggregation.value
+        if params.datatype == RasterDatatype.SPI and params.timescale:
+            api_params["timescale"] = params.timescale.value
+
+        data = await hcdp_get("/raster/timeseries", api_params)
+
+        # Response is a JSON object with date-string keys and numeric values
+        if isinstance(data, dict):
+            values = [float(v) for v in data.values() if v is not None]
+        elif isinstance(data, list):
+            values = [float(v) for v in data if v is not None]
+        else:
+            values = []
+
+        summary: Dict[str, Any] = {}
+        if values:
+            summary = {
+                "mean": round(sum(values) / len(values), 3),
+                "min":  round(min(values), 3),
+                "max":  round(max(values), 3),
+            }
+
+        result = {
+            "timeseries": data,
+            "lat":        params.lat,
+            "lng":        params.lng,
+            "datatype":   params.datatype.value,
+            "extent":     params.extent.value,
+            "period":     params.period.value,
+            "count":      len(values),
+            **summary,
+        }
+
+        if params.response_format == ResponseFormat.MARKDOWN:
+            lines = [
+                f"## Historical Timeseries — {params.datatype.value} at ({params.lat}, {params.lng})",
+                f"**Period:** {params.start} to {params.end} | **Extent:** {params.extent.value} | **Aggregation:** {params.period.value}",
+                f"**Records:** {len(values)} | **Mean:** {summary.get('mean','—')} | "
+                f"**Min:** {summary.get('min','—')} | **Max:** {summary.get('max','—')}",
+            ]
+            return "\n".join(lines)
+
+        return json.dumps(result)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+# ── Tool 7: get_station_latest ────────────────────────────────────────────────
+class GetStationLatestArgs(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    var_ids: Optional[str] = Field(
+        default="RF_1_Tot300s,Tair_1_Avg,RH_1_Avg,WS_1_Avg,VPD_1_Avg",
+        description=(
+            "Comma-separated variable IDs to retrieve latest values for. "
+            "The stationMonitor endpoint returns the last value of each requested variable "
+            "for ALL active stations — filter by station_id client-side from the result. "
+            "Default covers the most common weather variables."
+        ),
+    )
+    station_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "4-digit station ID to filter results client-side (e.g. '0502'). "
+            "NOTE: The /mesonet/db/stationMonitor API does not accept station_ids as a param — "
+            "this filter is applied after fetching all station data."
+        ),
+    )
+    response_format: ResponseFormat = Field(
+        default=ResponseFormat.JSON,
+        description="'json' for Code Mode programs, 'markdown' for human display.",
+    )
+
+
+@mcp.tool(
+    name="get_station_latest",
+    annotations={
+        "title": "Station Latest Readings (Real-Time Snapshot)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def get_station_latest(params: GetStationLatestArgs) -> str:
+    """Fetch the most recent measurements for Mesonet stations (real-time snapshot).
+
+    Uses /mesonet/db/stationMonitor which returns a dict keyed by station ID.
+    Per the API spec, this endpoint only accepts 'location' and 'var_ids' params.
+    Station filtering is applied client-side after fetching.
+
+    The response contains 24hr_latest, 24hr_max, 24hr_min, 24hr_avg_diff per station.
+
+    To get data for a specific station, provide station_id to filter the response.
+    To get all active station snapshots, leave station_id as null.
+
+    Pair with get_nearest_stations to find station IDs for a location first.
+
+    Args:
+        params (GetStationLatestArgs): Validated input parameters.
+
+    Returns:
+        str: JSON with keys:
+            - stations (list): each containing station_id, 24hr_latest readings,
+              24hr_max, 24hr_min per variable
+            - count (int)
+            - timestamp_note (str)
+    """
+    try:
+        # Per YAML spec: stationMonitor only accepts location and var_ids
+        api_params: Dict[str, Any] = {"location": "hawaii"}
+        if params.var_ids:
+            api_params["var_ids"] = params.var_ids
+
+        data = await hcdp_get("/mesonet/db/stationMonitor", api_params)
+
+        # Response is a dict keyed by station_id, per MesonetStationMonitorData schema
+        if not isinstance(data, dict):
+            return json.dumps({
+                "error": "Unexpected response format from stationMonitor.",
+                "raw": str(data)[:200],
+            })
+
+        stations_out = []
+        for station_id_key, station_data in data.items():
+            # Client-side station filter
+            if params.station_id and station_id_key != params.station_id:
+                continue
+
+            latest = station_data.get("24hr_latest", {})
+            readings = [
+                {
+                    "variable":  var_id,
+                    "value":     reading.get("value"),
+                    "timestamp": reading.get("timestamp"),
+                }
+                for var_id, reading in latest.items()
+            ]
+            stations_out.append({
+                "station_id":    station_id_key,
+                "24hr_latest":   readings,
+                "24hr_max":      station_data.get("24hr_max", {}),
+                "24hr_min":      station_data.get("24hr_min", {}),
+                "24hr_avg_diff": station_data.get("24hr_avg_diff", {}),
+            })
+
+        if not stations_out and params.station_id:
+            return json.dumps({
+                "error": (
+                    f"Station {params.station_id} not found in stationMonitor response. "
+                    "Station may be offline or ID may be incorrect. "
+                    "Use get_mesonet_stations to verify the station ID."
+                )
+            })
+
+        result = {
+            "stations":       stations_out,
+            "count":          len(stations_out),
+            "timestamp_note": "Values are the most recent reading within the last 24 hours per station.",
+        }
+
+        if params.response_format == ResponseFormat.MARKDOWN:
+            lines = [f"## Station Latest Readings ({len(stations_out)} stations)", ""]
+            for s in stations_out[:10]:
+                lines.append(f"### Station {s['station_id']}")
+                lines.append("| Variable | Value | Timestamp |")
+                lines.append("|---|---|---|")
+                for r in s["24hr_latest"]:
+                    lines.append(f"| {r['variable']} | {r['value']} | {r['timestamp']} |")
+                lines.append("")
+            if len(stations_out) > 10:
+                lines.append(f"_...{len(stations_out) - 10} more stations. Use JSON format._")
+            return "\n".join(lines)
+
+        return json.dumps(result)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+# ── Tool 8: get_nearest_stations ──────────────────────────────────────────────
+class GetNearestStationsArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lat: float    = Field(..., ge=18.0, le=23.0,    description="Latitude of target location.")
+    lng: float    = Field(..., ge=-161.0, le=-154.0, description="Longitude of target location.")
+    limit: int    = Field(default=5, ge=1, le=20,   description="Number of nearest stations to return.")
+    status: str   = Field(default="active",          description="Filter by station status client-side.")
+    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    R = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+@mcp.tool(
+    name="get_nearest_stations",
+    annotations={
+        "title": "Nearest Mesonet Stations to a Location",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_nearest_stations(params: GetNearestStationsArgs) -> str:
+    """Find the nearest active Mesonet stations to a given lat/lng point.
+
+    Geographic routing primitive. Use to translate place names to station_ids
+    for get_mesonet_data or get_station_latest.
+
+    Common Hawaii coordinates:
+      - Honolulu:       21.3069, -157.8583
+      - Hilo:           19.7297, -155.0900
+      - Kona:           19.6400, -155.9969
+      - Kahului (Maui): 20.8893, -156.4729
+      - Lihue (Kauai):  21.9811, -159.3711
+
+    Args:
+        params (GetNearestStationsArgs): Validated input parameters.
+
+    Returns:
+        str: JSON with keys:
+            - stations (list): sorted by distance_km, each with station_id, name,
+              lat, lng, elevation, distance_km, status
+            - query_lat (float), query_lng (float), count (int)
+    """
+    try:
+        data = await hcdp_get("/mesonet/db/stations", {"location": "hawaii"})
+        stations = data if isinstance(data, list) else data.get("data", [])
+
+        candidates = [
+            s for s in stations
+            if s.get("status") == params.status and s.get("lat") and s.get("lng")
+        ]
+        for s in candidates:
+            s["distance_km"] = round(
+                _haversine_km(params.lat, params.lng, float(s["lat"]), float(s["lng"])), 2
+            )
+        nearest = sorted(candidates, key=lambda x: x["distance_km"])[:params.limit]
+
+        result = {
+            "stations": [
+                {
+                    "station_id":  s["station_id"],
+                    "name":        s.get("name"),
+                    "full_name":   s.get("full_name"),
+                    "lat":         float(s["lat"]),
+                    "lng":         float(s["lng"]),
+                    "elevation":   s.get("elevation"),
+                    "distance_km": s["distance_km"],
+                    "status":      s.get("status"),
+                }
+                for s in nearest
+            ],
+            "query_lat": params.lat,
+            "query_lng": params.lng,
+            "count":     len(nearest),
+        }
+
+        if params.response_format == ResponseFormat.MARKDOWN:
+            lines = [
+                f"## Nearest Stations to ({params.lat}, {params.lng})",
+                "",
+                "| Station ID | Name | Distance | Elevation |",
+                "|---|---|---|---|",
+            ]
+            for s in result["stations"]:
+                lines.append(
+                    f"| {s['station_id']} | {s['full_name']} | {s['distance_km']} km | {s['elevation']}m |"
+                )
+            return "\n".join(lines)
+
+        return json.dumps(result)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+# ── Tool 9: get_island_comparison ─────────────────────────────────────────────
+class GetIslandComparisonArgs(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    year: int = Field(..., ge=1920, le=2030, description="Year to compare across islands.")
+    datatype: RasterDatatype = Field(..., description="Raster climate variable.")
+    islands: Optional[List[IslandName]] = Field(
+        default=None,
+        description="Islands to compare. Defaults to ['oahu','maui','big_island','kauai'].",
+    )
+    production: str = Field(default="new", description="Rainfall production method.")
+    aggregation: Optional[TempAggregation] = Field(
+        default=None, description="Temperature aggregation."
+    )
+    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+
+
+@mcp.tool(
+    name="get_island_comparison",
+    annotations={
+        "title": "Cross-Island Climate Comparison (Ranked)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_island_comparison(params: GetIslandComparisonArgs) -> str:
+    """Fetch and rank climate data across all Hawaiian islands for a given year.
+
+    Returns a sorted comparison answering: 'Which island was driest in 2024?'
+
+    All island fetches run in parallel via get_island_climate_history.
+
+    Args:
+        params (GetIslandComparisonArgs): Validated input parameters.
+
+    Returns:
+        str: JSON with keys:
+            - year (int), datatype (str)
+            - ranked (list): sorted ascending by island_wide_average, each with
+              rank, island, island_wide_average, min, max, driest_region, wettest_region
+            - summary (str): human-readable one-liner
+    """
+    try:
+        island_list = params.islands or [
+            IslandName.OAHU, IslandName.MAUI, IslandName.BIG_ISLAND, IslandName.KAUAI
+        ]
+        fetch_params = GetIslandClimateHistoryArgs(
+            islands=island_list,
+            years=params.year,
+            datatype=params.datatype,
+            production=params.production,
+            aggregation=params.aggregation,
+            response_format=ResponseFormat.JSON,
+        )
+        raw_str = await get_island_climate_history(fetch_params)
+        raw = json.loads(raw_str)
+        results = raw.get("results", [])
+
+        ranked_data = []
+        for r in results:
+            avg   = r.get("island_wide_average")
+            valid = [b for b in r.get("regional_breakdown", []) if "average" in b]
+            ranked_data.append({
+                "island":              r["island"],
+                "island_wide_average": avg,
+                "min":                 round(min(b["average"] for b in valid), 3) if valid else None,
+                "max":                 round(max(b["average"] for b in valid), 3) if valid else None,
+                "driest_region":       min(valid, key=lambda x: x["average"])["location"] if valid else None,
+                "wettest_region":      max(valid, key=lambda x: x["average"])["location"] if valid else None,
+            })
+
+        ranked_data.sort(key=lambda x: (x["island_wide_average"] is None, x["island_wide_average"] or 0))
+        for i, item in enumerate(ranked_data):
+            item["rank"] = i + 1
+
+        summary = (
+            f"In {params.year}, {ranked_data[0]['island']} had the lowest {params.datatype.value} "
+            f"({ranked_data[0].get('island_wide_average','—')}) and "
+            f"{ranked_data[-1]['island']} had the highest ({ranked_data[-1].get('island_wide_average','—')})."
+        ) if ranked_data else ""
+
+        result = {
+            "year":     params.year,
+            "datatype": params.datatype.value,
+            "ranked":   ranked_data,
+            "summary":  summary,
+        }
+
+        if params.response_format == ResponseFormat.MARKDOWN:
+            lines = [
+                f"## Island {params.datatype.value.title()} Comparison — {params.year}",
+                f"_{summary}_", "",
+                "| Rank | Island | Avg | Min | Max | Driest Region |",
+                "|---|---|---|---|---|---|",
+            ]
+            for r in ranked_data:
+                lines.append(
+                    f"| {r['rank']} | {r['island']} | {r['island_wide_average'] or '—'} "
+                    f"| {r['min'] or '—'} | {r['max'] or '—'} | {r['driest_region'] or '—'} |"
+                )
+            return "\n".join(lines)
+
+        return json.dumps(result)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+# ── Tool 10: get_drought_index ────────────────────────────────────────────────
+class GetDroughtIndexArgs(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    islands: Union[IslandName, List[IslandName]] = Field(
+        ..., description="Island or list of islands."
+    )
+    reference_years: List[int] = Field(
+        ...,
+        min_length=2,
+        description="Years defining the reference window. Min 2. SPI computed for each year.",
+    )
+    datatype: RasterDatatype = Field(
+        default=RasterDatatype.RAINFALL,
+        description="Raster climate variable. Typically 'rainfall'.",
+    )
+    production: str = Field(default="new", description="Rainfall production method.")
+    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+
+    @field_validator("reference_years")
+    @classmethod
+    def validate_years(cls, v: List[int]) -> List[int]:
+        if len(set(v)) < 2:
+            raise ValueError("reference_years must have at least 2 distinct years.")
+        return sorted(set(v))
+
+
+@mcp.tool(
+    name="get_drought_index",
+    annotations={
+        "title": "SPI Drought Index (Standardized Precipitation Index)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_drought_index(params: GetDroughtIndexArgs) -> str:
+    """Compute SPI (Standardized Precipitation Index) for one or more islands.
+
+    SPI = (observed - mean) / stddev over the reference period.
+
+    Interpretation: >= +2.0 extremely wet | +1.0 to +1.99 moderately wet |
+    -0.99 to +0.99 near normal | -1.0 to -1.49 moderate drought |
+    -1.5 to -1.99 severe drought | <= -2.0 extreme drought.
+
+    Fetches all data in one parallel call, computes SPI locally.
+
+    Args:
+        params (GetDroughtIndexArgs): Validated input parameters.
+
+    Returns:
+        str: JSON with keys:
+            - datatype (str), reference_period (list[int])
+            - results (list): per island — reference_mean, reference_stddev,
+              spi_by_year (year: {value, spi, interpretation}), trend
+    """
+    try:
+        island_list = (
+            [params.islands] if isinstance(params.islands, (str, IslandName)) else list(params.islands)
+        )
+        fetch_params = GetIslandClimateHistoryArgs(
+            islands=island_list,
+            years=params.reference_years,
+            datatype=params.datatype,
+            production=params.production,
+            response_format=ResponseFormat.JSON,
+        )
+        raw_str = await get_island_climate_history(fetch_params)
+        raw = json.loads(raw_str)
+
+        by_island: Dict[str, Dict[int, float]] = {}
+        for r in raw.get("results", []):
+            island = r["island"]
+            val    = r.get("island_wide_average")
+            if val is not None:
+                by_island.setdefault(island, {})[r["year"]] = val
+
+        def interpret_spi(spi: float) -> str:
+            if spi >= 2.0:    return "Extremely wet"
+            if spi >= 1.5:    return "Very wet"
+            if spi >= 1.0:    return "Moderately wet"
+            if spi >= -0.99:  return "Near normal"
+            if spi >= -1.49:  return "Moderate drought"
+            if spi >= -1.99:  return "Severe drought"
+            return "Extreme drought"
+
+        island_strs = [i.value if hasattr(i, "value") else i for i in island_list]
+        results = []
+        for island_name in island_strs:
+            yearly = by_island.get(island_name, {})
+            values = list(yearly.values())
+            if len(values) < 2:
+                results.append({"island": island_name, "error": "Insufficient data for SPI."})
+                continue
+            mean   = sum(values) / len(values)
+            stddev = math.sqrt(sum((v - mean) ** 2 for v in values) / len(values))
+
+            spi_by_year: Dict[str, Any] = {}
+            for year in params.reference_years:
+                val = yearly.get(year)
+                if val is not None and stddev > 0:
+                    spi = round((val - mean) / stddev, 2)
+                    spi_by_year[str(year)] = {
+                        "value":          val,
+                        "spi":            spi,
+                        "interpretation": interpret_spi(spi),
+                    }
+                elif val is not None:
+                    spi_by_year[str(year)] = {
+                        "value":          val,
+                        "spi":            None,
+                        "interpretation": "Insufficient variance",
+                    }
+
+            spi_vals = [v["spi"] for v in spi_by_year.values() if v.get("spi") is not None]
+            trend = "stable"
+            if len(spi_vals) >= 2:
+                slope = (spi_vals[-1] - spi_vals[0]) / (len(spi_vals) - 1)
+                trend = "drying" if slope < -0.1 else "wetting" if slope > 0.1 else "stable"
+
+            results.append({
+                "island":           island_name,
+                "reference_mean":   round(mean, 3),
+                "reference_stddev": round(stddev, 3),
+                "spi_by_year":      spi_by_year,
+                "trend":            trend,
+            })
+
+        result = {
+            "datatype":         params.datatype.value,
+            "reference_period": params.reference_years,
+            "results":          results,
+        }
+
+        if params.response_format == ResponseFormat.MARKDOWN:
+            lines = [f"## SPI Drought Index — {params.datatype.value}", ""]
+            for r in results:
+                lines.append(f"### {r['island'].title()}")
+                if "error" in r:
+                    lines.append(f"Warning: {r['error']}")
+                    continue
+                lines.append(
+                    f"**Mean:** {r['reference_mean']} | **Stddev:** {r['reference_stddev']} | **Trend:** {r['trend']}"
+                )
+                lines.append("\n| Year | Value | SPI | Interpretation |\n|---|---|---|---|")
+                for yr, v in r["spi_by_year"].items():
+                    lines.append(
+                        f"| {yr} | {v.get('value','—')} | {v.get('spi','—')} | {v.get('interpretation','')} |"
+                    )
+                lines.append("")
+            return "\n".join(lines)
+
+        return json.dumps(result)
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+# ── Tool 11: export_mesonet_csv_via_email ─────────────────────────────────────
+class ExportMesonetCsvViaEmailArgs(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    email: str = Field(
+        ...,
+        description="Email address to receive the CSV export.",
+    )
+    var_ids: List[str] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "List of variable IDs to export (e.g. ['RH_1_Min', 'Tair_2_Max']). "
+            "Use get_mesonet_variables to discover valid IDs."
+        ),
+    )
+    start_date: str = Field(
+        ...,
+        description="ISO 8601 start datetime, e.g. '2025-04-01T00:00:00-10:00'.",
+    )
+    end_date: str = Field(
+        ...,
+        description="ISO 8601 end datetime, e.g. '2025-05-01T00:00:00-10:00'.",
+    )
+    station_ids: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "List of 4-digit station IDs to include (e.g. ['0145','0141','0115']). "
+            "If null, all active stations are included."
+        ),
+    )
+    output_name: Optional[str] = Field(
+        default=None,
+        description="Optional filename for the output CSV.",
+    )
+
+
+@mcp.tool(
+    name="export_mesonet_csv_via_email",
+    annotations={
+        "title": "Export Mesonet Data as CSV via Email (for Climate Scientists)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def export_mesonet_csv_via_email(params: ExportMesonetCsvViaEmailArgs) -> str:
+    """Request a bulk CSV export of Mesonet data delivered to a specified email address.
+
+    Designed for climate scientists who need raw station data for offline analysis.
+    The HCDP API processes the request asynchronously and emails the CSV.
+
+    POSTs to /mesonet/db/measurements/email. The API processes the request
+    asynchronously and emails the CSV (wide format: columns timestamp, station_id, variables).
+    Returns 202 on success — the actual data arrives via email.
+
+    For Code Mode programs handling large date ranges: use this instead of
+    paginating get_mesonet_data hundreds of times. Call once, wait for email.
+
+    Request body format per YAML spec:
+      {
+        "email": "user@example.com",
+        "data": {
+          "location": "hawaii",
+          "station_ids": ["0145", "0141"],
+          "var_ids": ["RH_1_Min", "Tair_2_Max"],
+          "start_date": "2025-04-01T00:00:00-10:00",
+          "end_date": "2025-05-01T00:00:00-10:00"
+        }
+      }
+
+    Args:
+        params (ExportMesonetCsvViaEmailArgs): Validated input parameters.
+
+    Returns:
+        str: JSON with keys:
+            - status (int): 202 on success
+            - message (str): confirmation
+            - email_sent_to (str)
+    """
+    try:
+        data_spec: Dict[str, Any] = {
+            "location":   "hawaii",
+            "var_ids":    params.var_ids,       # array per spec
+            "start_date": params.start_date,
+            "end_date":   params.end_date,
+        }
+        if params.station_ids:
+            data_spec["station_ids"] = params.station_ids  # array per spec
+
+        body: Dict[str, Any] = {
+            "email": params.email,
+            "data":  data_spec,
+        }
+        if params.output_name:
+            body["outputName"] = params.output_name
+
+        response = await hcdp_post("/mesonet/db/measurements/email", body)
+
+        return json.dumps({
+            "status":        response.get("status", 202),
+            "message":       f"Export queued. CSV will be emailed to {params.email}.",
+            "email_sent_to": params.email,
+            "api_response":  response.get("message", ""),
+        })
+
+    except Exception as e:
+        return _handle_error(e)
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 def cli_main():
-    """Entry point for the CLI script."""
-    asyncio.run(main())
-
-
-if __name__ == "__main__":
-    cli_main()
+    """Entry point for the hcdp-mcp-server CLI command."""
+    mcp.run()
