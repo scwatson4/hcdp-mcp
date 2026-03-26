@@ -64,10 +64,10 @@ MANIFEST
 # Data files
 *.tiff
 *.tif
-*.csv
+# *.csv
 *.json
 !sample_data/*.tiff
 !sample_data/*.csv
 !sample_data/*.json
 
-resources/*
+# resources/*

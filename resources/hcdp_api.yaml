@@ -1,0 +1,1087 @@
+openapi: 3.0.4
+info:
+  title: Hawaii Climate Data Portal APIs
+  description: |
+    This document contains the full list of HCDP API descriptions with examples. Use of these APIs requires a token to authenticate. Go to the HCDP website to fill out the request form.
+  version: V1
+
+servers:
+  - url: https://api.hcdp.ikewai.org
+    description: API base URL
+
+security:
+  - Authorization: []
+
+tags:
+  - name: raster
+  - name: genzip
+  - name: files
+  - name: stations
+  - name: mesonet
+
+paths:
+  /raster:
+    get:
+      tags:
+        - raster
+      summary: Return GeoTIFF file data
+      description: |
+        Example cURL:
+        - curl -k -H "Authorization: Bearer API-AUTH-TOKEN" "https://api.hcdp.ikewai.org/raster?date=2022-02&extent=bi&datatype=rainfall&production=new&period=month"
+      parameters:
+        - name: date
+          in: query
+          description: an ISO-8601 formatted date string indicating the date of the data map to retrieve
+          schema:
+            $ref: '#/components/schemas/date'
+        - name: location
+          in: query
+          description: The location to get the raster from
+          default: hawaii
+          schema:
+            $ref: '#/components/schemas/location'
+        - name: returnEmptyNotFound
+          in: query
+          description: boolean indicating whether to return an empty geotiff if the requested file is not found. If set to false this will return a 404 if not found.
+          default: false
+          schema:
+            type: boolean
+        - name: datatype
+          in: query
+          description: string indicating the climate variable
+          schema:
+            $ref: '#/components/schemas/datatype'
+        - name: extent
+          in: query
+          description: string indicating the spatial extent of the raster
+          schema:
+            $ref: '#/components/schemas/extent'
+        - name: production
+          in: query
+          description: rainfall production methodology (use when datatype=rainfall)
+          schema:
+            $ref: '#/components/schemas/production'
+        - name: aggregation
+          in: query
+          description: temperature aggregations (use when datatype=temperature)
+          schema:
+            $ref: '#/components/schemas/aggregation'
+        - name: timescale
+          in: query
+          description: The timescale over which the drought is evaluated (use when datatype=spi)
+          schema:
+            $ref: '#/components/schemas/timescale'
+        - name: period
+          in: query
+          schema:
+            $ref: '#/components/schemas/period'
+        # need to add additional identifying properties below
+      responses:
+        '200':
+          description: Success
+          content:
+            image/tif:
+              schema:
+                type: string
+                format: binary
+
+  /raster/timeseries:
+    get:
+      tags:
+        - raster
+      summary: >
+        Returns JSON object with date/time value pairs. Must contain one of the following: row and col, index, or lat and lng
+      description: |
+        Example cURL:
+
+        - curl -k -H "Authorization: Bearer API-AUTH-TOKEN" "https://api.hcdp.ikewai.org/raster/timeseries?start=2020-01&end=2023-06&row=324&col=822&extent=statewide&datatype=rainfall&production=new&period=month"
+        - curl -k -H "Authorization: Bearer API-AUTH-TOKEN" "https://api.hcdp.ikewai.org/raster/timeseries?start=2020-01&end=2023-06&lat=21.539576&lng=-157.965820&extent=statewide&datatype=rainfall&production=new&period=month"
+
+      parameters:
+        - name: location
+          in: query
+          description: The location to get the raster from
+          default: hawaii
+          schema:
+            $ref: '#/components/schemas/location'
+        - name: start
+          in: query
+          description: an ISO-8601 formatted date string indicating the start of the timeseries range (inclusive) (must include end date as well)
+          schema:
+            $ref: '#/components/schemas/date'
+        - name: end
+          in: query
+          description: an ISO-8601 formatted date string indicating the end of the timeseries range (inclusive)
+          schema:
+            $ref: '#/components/schemas/date'
+        - name: row
+          in: query
+          description: row of the grid cell to produce a timeseries of (must specify column (col) as well)
+          schema:
+            type: integer
+        - name: col
+          in: query
+          description: col of the grid cell to produce a timeseries of
+          schema:
+            type: integer
+        - name: index
+          in: query
+          description: the 1D index of the value to produce a timeseries of (width * row + col)
+          schema:
+            type: integer
+        - name: lat
+          in: query
+          description: the latitude of the map location to produce a timeseries of (must specify longitude as well)
+          schema:
+            type: number
+        - name: lng
+          in: query
+          description: the longitude of the map location to produce a timeseries of
+          schema:
+            type: number
+        - name: datatype
+          in: query
+          description: string indicating the climate variable
+          schema:
+            $ref: '#/components/schemas/datatype'
+        - name: extent
+          in: query
+          description: string indicating the spatial extent of the raster
+          schema:
+            $ref: '#/components/schemas/extent'
+        # below not explicitly included in api desc, but implied based on example
+        - name: production
+          in: query
+          description: rainfall products (use when datatype=rainfall)
+          schema:
+            $ref: '#/components/schemas/production'
+        - name: aggregation
+          in: query
+          description: temperature aggregations (use when datatype=temperature)
+          schema:
+            $ref: '#/components/schemas/aggregation'
+        - name: timescale
+          in: query
+          description: The timescale over which the drought is evaluated (use when datatype=spi)
+          schema:
+            $ref: '#/components/schemas/timescale'
+        - name: period
+          in: query
+          schema:
+            $ref: '#/components/schemas/period'
+        # additional identifying properties
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Unauthorized access
+        default:
+          description: file(s) not found and/or unexpected error
+
+  /genzip/email:
+    post:
+      tags:
+        - genzip
+      summary: A 202 if request was successfully submitted. This will generate a zip file containing the requested files described by the data array and send it to the specified email address
+      description: |
+
+        Example cURL:
+
+        - curl -d '{"email":"[INSERT EMAIL HERE]","data":[{"datatype":"rainfall","production":"new","period":"month","extent":"statewide","range":{"start":"2019-01","end":"2022-05"},"files":["data_map","metadata"]}]}' -X POST -k -H "Content-Type: application/json" -H "Authorization: Bearer <API-AUTH-TOKEN>" "https://api.hcdp.ikewai.org/genzip/email"
+
+      requestBody:
+        $ref: '#/components/requestBodies/GenzipRequestWithZipName'
+      responses:
+        '202':
+          description: request was successfully submitted
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized access
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /genzip/instant/content:
+    post:
+      tags: [genzip]
+      summary: Generates a zip file containing the requested files described by the data array and returns the contents
+      description: |
+        Example cURL:
+        - curl -d '{"email":"<email>","data":[{"datatype":"rainfall","production":"new","period":"month","extent":"statewide","range":{"start":"2019-01","end":"2022-05"},"files":["data_map","metadata"]}]}' -X POST -k -H "Content-Type: application/json" -H "Authorization: Bearer <API-AUTH-TOKEN>" "https://api.hcdp.ikewai.org/genzip/instant/content"
+      requestBody:
+        $ref: '#/components/requestBodies/GenzipRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Unauthorized access
+
+  /genzip/instant/link:
+    post:
+      tags: [genzip]
+      summary: Generates a zip file containing the requested files described by the data array and returns a link to the data through the files API
+      description: |
+        Example cURL:
+        - curl -d '{"email":"<email>","data":[{"datatype":"rainfall","production":"new","period":"month","extent":"statewide","range":{"start":"2019-01","end":"2022-05"},"files":["data_map","metadata"]}]}' -X POST -k -H "Content-Type: application/json" -H "Authorization: Bearer <API-AUTH-TOKEN>" "https://api.hcdp.ikewai.org/genzip/instant/link"
+      requestBody:
+        $ref: '#/components/requestBodies/GenzipRequestWithZipName'
+      responses:
+        '200':
+          description: success
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized access
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /genzip/instant/splitlink:
+    post:
+      tags: [genzip]
+      summary: Generates a zip file containing the requested files described by the data array and returns an array of links containing ordered parts of the requested data. These parts can be downloaded and composed into a single file in the order provided by the array to construct the zip file containing the requested data.
+      description: |
+        Example cURL:
+        - curl -d '{"email":"<email>","data":[{"datatype":"rainfall","production":"new","period":"month","extent":"statewide","range":{"start":"2019-01","end":"2022-05"},"files":["data_map","metadata"]}]}' -X POST -k -H "Content-Type: application/json" -H "Authorization: Bearer <API-AUTH-TOKEN>" "https://api.hcdp.ikewai.org/genzip/instant/splitlink"
+      requestBody:
+        $ref: '#/components/requestBodies/GenzipRequest'
+      responses:
+        '200':
+          description: success
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized access
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  # /raw/list:
+  #   get:
+  #     tags: [raw]
+  #     summary: A list of Files API links for the raw data available for that day produced by loggernet
+  #     description: |
+  #       Example cURL:
+  #       - curl -k https://api.hcdp.ikewai.org/raw/list?date=2021-11-03 -H "Authorization: Bearer <API-AUTH-TOKEN>"
+  #     parameters:
+  #       - name: date
+  #         in: query
+  #         description: An ISO-8601 formatted date string indicating the date of the data to retrieve
+  #         required: true
+  #         schema:
+  #           $ref: '#/components/schemas/date'
+  #       - name: station_id
+  #         in: query
+  #         description: (optional) The four digit ID of the station to get files for (e.g. 0115). If omitted files for all stations will be returned.
+  #         required: false
+  #         schema:
+  #           type: string
+  #           pattern: '^[0-9]{4}'
+  #       - name: location
+  #         in: query
+  #         description: (optional) The sensor network location to retrieve files for. Default Hawaii
+  #         required: false
+  #         schema:
+  #           type: string
+  #     responses:
+  #       '200':
+  #         description: success
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: array
+  #               items:
+  #                 type: string
+  #       '401':
+  #         description: Unauthorized access
+
+  /files/production/list:
+    get:
+      tags: [files]
+      summary: A list of Files API links for the data files described by the data array. This would be the content of a zip file generated by any of the /genzip endpoints.
+      description: |
+        Example cURL:
+        - curl -k https://api.hcdp.ikewai.org/production/list?data=[{'datatype':'rainfall','production':'new','period':'month','extent':'statewide','range':{'start':'2022-01','end':'2022-02'},'files':['data_map','metadata']}] -H "Authorization: Bearer <API-AUTH-TOKEN>"
+      parameters:
+        - name: data
+          in: query
+          description: an array of JSON objects (see "data" in /genzip/email)
+          required: true
+          schema:
+            type: string
+            pattern: '^\[.*\]$'
+            example: '[{"datatype":"rainfall","production":"new","period":"month","extent":"statewide","range":{"start":"2020-01","end":"2020-12"},"files":["data_map","se"]}]'
+      responses:
+        '200':
+          description: success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '401':
+          description: Unauthorized access
+
+  # e.g. production/rainfall/new/day/statewide/anom/2020/01
+  # /files/explore/**:
+  #   get:
+  #     tags: [files]
+  #     summary: Returns an array with directory listing information for the directory provided in the path if available, or file data for the file at the requested path if available
+  #     description: |
+  #       Example cURL:
+  #       - curl -k -H "Authorization: Bearer API-AUTH-TOKEN" "https://api.hcdp.ikewai.org/files/explore/production/rainfall/new/day/statewide/anom/2020/01"
+  #     parameters:
+  #       - name: production_type
+  #         in: path
+  #         required: true
+  #         schema:
+  #           $ref: '#/components/schemas/production'
+  #       - name: period
+  #         in: path
+  #         required: true
+  #         schema:
+  #           $ref: '#/components/schemas/period'
+  #       - name: extent
+  #         in: path
+  #         required: true
+  #         schema:
+  #           $ref: '#/components/schemas/extent'
+  #       - name: file_type
+  #         in: path
+  #         required: true
+  #         schema:
+  #           $ref: '#/components/schemas/filetypes'
+  #       - name: year
+  #         in: path
+  #         required: true
+  #         schema:
+  #           type: string
+  #           pattern: '^(199[0-9]|20[0-9]{2})'
+  #       - name: month
+  #         in: path
+  #         required: true
+  #         schema:
+  #           type: string
+  #           pattern: '^(0[1-9]|1[0-2])'
+  #     responses:
+  #       '200':
+  #         description: success
+  #         content:
+  #           application/json:
+  #             schema:
+  #               type: array
+  #               items:
+  #                 type: string
+  #       default:
+  #         description: failure
+
+  /files/production/retrieve:
+    get:
+      tags: [files]
+      summary: Returns file data for the requested file or a 404 if the file could not be found
+      description: |
+        Example cURL:
+        - curl -k -H "Authorization: Bearer API-AUTH-TOKEN" "https://api.hcdp.ikewai.org/files/retrieve/production?date=2022-02&extent=bi&datatype=rainfall&production=new&period=month&type=anom"
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/date'
+        - name: type
+          in: query
+          required: false
+          description: string indicating the type of file to download for this dataset. If this query is not specified, file type defaults to data_map
+          schema:
+            $ref: '#/components/schemas/filetypes'
+        - name: datatype
+          in: query
+          required: true
+          description: string indicating the climate variable
+          schema:
+            $ref: '#/components/schemas/datatype'
+        - name: extent
+          in: query
+          required: true
+          description: string indicating the spatial extent of the raster
+          schema:
+            $ref: '#/components/schemas/extent'
+        - name: production
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/production'
+        - name: aggregation
+          in: query
+          description: temperature aggregations (use when datatype=temperature)
+          schema:
+            $ref: '#/components/schemas/aggregation'
+        - name: timescale
+          in: query
+          description: The timescale over which the drought is evaluated (use when datatype=spi)
+          schema:
+            $ref: '#/components/schemas/timescale'
+        - name: period
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/period'
+          # additional identifying properties?
+      responses:
+        '200':
+          description: success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '404':
+          description: file(s) not found
+        '401':
+          description: missing or invalid API key
+
+  /stations:
+    get:
+      tags: [stations]
+      summary: Station data documents - This endpoint accepts a query field enabling a mongodb style query('q' field) to pull back datatypes - the "name" field specifies the type of document - current valid document types are ["hcdp_station_metadata", "hcdp_station_value"]
+      description: |
+        Format of "q" to receive metadata documents:
+        - q: "{'name': 'hcdp_station_metadata'}"
+
+        Format to receive document containing value of the specified station for the given date:
+        - q:  "{
+              'name': 'hcdp_station_value',
+              'value.station_id': ' < station_id > ',
+              'value.date': ' < iso-date > ',
+              'value.datatype': ' < datatype e.g. rainfall, temperature> ',
+              'value.period': ' < period > ',
+              'value.fill': ' < fill > '[, 'value.production': ' < production > ']
+                [, 'value.aggregation': ' < aggregation > ']
+            }"
+
+        Format to receive data for the specified station between the provided dates:
+        - q:"{'$and': [{
+                  'name': 'hcdp_station_value',
+                  'value.station_id': ' < station_id > ',
+                  'value.datatype': ' < datatype e.g. rainfall, temperature > ',
+                  'value.period': ' < period > ',
+                  'value.fill': ' < fill > '[, 'value.production': 'production']
+                    [, 'value.aggregation': ' < aggregation > ']
+                },
+                {
+                  'value.date': {
+                    '$gte': ' < start_date - iso date > '
+                  }
+                },
+                {
+                  'value.date': {
+                    '$lte': ' < end_date - iso date > '
+                  }
+                }
+              ]
+            }"
+
+        cURL template:
+        - https://api.hcdp.ikewai.org/stations?q=<URI_encoded_query>&limit=<document _limit>&offset=<offset>
+
+        Example cURL calls:
+        - curl -k "https://api.hcdp.ikewai.org/stations?q={'name':'hcdp_station_value','value.date':'2022-03-08','value.period':'day','value.fill':'raw','value.datatype':'temperature','value.aggregation':'max'}&limit=10000&offset=0" -H "Authorization: Bearer API-AUTH-TOKEN"
+          - curl -k "https://api.hcdp.ikewai.org/stations?q=%7B%27name%27:%27hcdp_station_value%27,%27value.date%27:%272022-02%27,%27value.period%27:%27month%27,%27value.fill%27:%27partial%27,%27value.datatype%27:%27rainfall%27,%27value.production%27:%27new%27%7D&limit=10000&offset=0" -H "Authorization: Bearer <API-AUTH-TOKEN>"
+        - curl -k "https://api.hcdp.ikewai.org/stations?q={'$and':[{'name':'hcdp_station_value','value.station_id':'1094.2','value.period':'month','value.fill':'partial','value.datatype':'rainfall','value.production':'new'},{'value.date':{'$gte':'1994-01'}},{'value.date':{'$lt':'1995-01'}}]}&limit=10000&offset=0" -H "Authorization: Bearer API-AUTH-TOKEN"
+          - curl -k "https://api.hcdp.ikewai.org/stations?q=%7B%27%24and%27%3A%5B%7B%27name%27%3A%27hcdp_station_value%27%2C%27value.station_id%27%3A%271094.2%27%2C%27value.period%27%3A%27month%27%2C%27value.fill%27%3A%27partial%27%2C%27value.datatype%27%3A%27rainfall%27%2C%27value.production%27%3A%27new%27%7D%2C%7B%27value.date%27%3A%7B%27%24gte%27%3A%271994-01%27%7D%7D%2C%7B%27value.date%27%3A%7B%27%24lt%27%3A%271995-01%27%7D%7D%5D%7D%26limit%3D10000%26offset%3D0" -H "Authorization: Bearer API-AUTH-TOKEN"
+
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/StationMetaData'
+              - $ref: '#/components/schemas/StationValue'
+              - $ref: '#/components/schemas/StationTimeSeries'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: success
+        '404':
+          description: file(s) not found
+        '401':
+          description: Unauthorized access
+
+  /mesonet/db/measurements:
+    get:
+      tags: [mesonet]
+      summary: If row_mode = "array" OR "wide_array", it returns a JSON object with the keys "index" and "data". Where "index" is an array of the data column names and "data" an array of records with columns in the order indicated by the index. Otherwise, it returns an array of JSON object records keyed by the column name
+      description: |
+        Example cURL:
+        - curl -k "https://api.hcdp.ikewai.org/mesonet/db/measurements?location=hawaii&station_ids=0145,0141,0115&var_ids=RH_1_Min,Tair_2_Max&start_date=2023-11-01T00%3A00%3A00-10%3A00&join_metadata=true" -H "Authorization: Bearer <API-AUTH-TOKEN>"
+      parameters:
+        - name: station_ids
+          in: query
+          required: false
+          example: 0145,0141,0115
+          description: A comma separated list of four digit station IDs to be retrieved (e.g. 0115).
+          schema:
+            type: string
+            pattern: "^\\d{4}(,\\d{4})*$"
+        - name: start_date
+          in: query
+          required: false
+          example: 2023-11-01T00:00:00-10:00
+          description: An ISO 8601 formatted date string representing the earliest date to return records from.
+          schema:
+            $ref: '#/components/schemas/date'
+        - name: end_date
+          in: query
+          required: false
+          description: An ISO 8601 formatted date string representing the latest date to return records from.
+          schema:
+            $ref: '#/components/schemas/date'
+        - name: var_ids
+          in: query
+          required: false
+          description: A comma separated list of variable IDs to be retrieved. (e.g. RH_1_Min, Tair_2_Max)
+          example: RH_1_Min,Tair_2_Max
+          schema:
+            type: string
+        - name: flags
+          in: query
+          required: false
+          description: A comma separated list of data flag values to be retrieved
+          schema:
+            type: string
+        - name: location
+          in: query
+          required: false
+          description: |
+            The mesonet location to retrieve data for.
+          default: hawaii
+          schema:
+            $ref: '#/components/schemas/location'
+        - name: intervals
+          in: query
+          required: false
+          description: A comma separated list of variable data intervals in seconds to be retrieved. !! Please note that this parameter WILL NOT aggregate values to the specified interval !!. This will limit the variables returned to variables measured at the specified intervals. Note that this will only filter variables based on their reporting rate and will not aggregate values of variables that are not at this reporting rate.
+          schema:
+            type: string
+            # e.g. 1, 2, ... 100 ... 1000 seconds
+            pattern: "^[1-9]\\d*(,[1-9]\\d*)*$"
+        - name: limit
+          in: query
+          description: The maximum number of records to be retrieved. Values less than 1 will be set to maximum value of 1000000 (one million). By default, the value will be 10000. Note that queries are best optimized for date ranges and using a date range is ALWAYS preferable to limits and offsets. For "wide" row modes, the number of returned rows will be less than or equal to the provided limit. The limit will be applied to individual records, so the real number of rows will be between limit/n and limit where n is the number of variables included in the query. The number of rows will be limit/n in the case where every variable has a record for every timestamp, and limit where exactly 1 variable has a record for every timestamp. Please scale your limit accordingly to get more rows in a single query. when using these modes.
+          required: false
+          schema:
+            type: integer
+            default: 10000
+            maximum: 1000000
+        - name: offset
+          in: query
+          description: How many records to offset the result by. Note that queries are best optimized for date ranges and using a date range is ALWAYS preferable to limits and offsets. For "wide" row modes, the offset will be applied to individual records and the number of rows offset will be less than or equal to the offset provided. See the description in the limit option.
+          required: false
+          schema:
+            type: integer
+        - name: reverse
+          in: query
+          description: By default values will be sorted by timestamp starting with the most recent value. Passing a value to this parameter will reverse the order of the data so the oldest values are returned first.
+          schema:
+            type: string
+        - name: join_metadata
+          in: query
+          description: If a value is provided for this parameter, station and variable metadata will be included in each row. For "wide" row modes only station metadata will be included.
+          example: true
+          schema:
+            type: string
+        - name: local_tz
+          in: query
+          description: If a value is provided for this parameter, returned dates will be converted to the timezone local to the mesonet location
+          schema:
+            type: string
+        - name: row_mode
+          in: query
+          description: array - the query will return a column index and data as a 2D array, wide_array - the query will return a column index and data as a 2D array. Rows will be grouped by station and timestamp with variables as columns. Queries can still be limited by flag value, but the flag values will not be returned in this mode. Variable metadata will not be returned in this mode, json - The query will return an array of JSON objects representing each row of data keyed by column names, wide_json - The query will return an array of JSON objects representing each row of data keyed by column names. Rows will be grouped by station and timestamp with variables as columns. Queries can still be limited by flag value, but the flag values will not be returned in this mode. Variable metadata will not be returned in this mode.
+          schema:
+            type: string
+            enum: [array, wide_array, json, wide_json]
+      responses:
+        '200':
+          description: success
+        '404':
+          description: file(s) not found
+        '401':
+          description: Unauthorized access
+
+  /mesonet/db/stations:
+    get:
+      tags: [mesonet]
+      summary: If row_mode = "array", it returns a JSON object with the keys "index" and "data". Where "index" is an array of the data column names and "data" an array of records with columns in the order indicated by the index. Otherwise, it returns an array of JSON object records, each keyed by the column name
+      description: |
+        Example cURL:
+        - curl -k "https://api.hcdp.ikewai.org/mesonet/db/stations" -H "Authorization: Bearer <API-AUTH-TOKEN>"
+      parameters:
+        - name: station_ids
+          in: query
+          required: false
+          description: A comma separated list of four digit station IDs to be retrieved (e.g. 0115).
+          schema:
+            type: string
+            pattern: "^\\d{4}(,\\d{4})*$"
+        - name: location
+          in: query
+          description: The mesonet location to retrieve data for.
+          default: hawaii
+          required: false
+          schema:
+            $ref: '#/components/schemas/location'
+        - name: limit
+          in: query
+          description: The maximum number of records to be retrieved. Values less than 1 will be have no limit
+          required: false
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          description: How many records to offset the result by. This can be combined with the limit parameter to retrieve large groups of data in chunks.
+          required: false
+          schema:
+            type: integer
+        - name: row_mode
+          in: query
+          description: By default data will be returned as an array of JSON objects representing each row of data keyed by column names. If rowMode is "array" the query will return a column index and data as a 2D array.
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: success
+        '404':
+          description: file(s) not found
+        '401':
+          description: Unauthorized access
+
+  /mesonet/db/variables:
+    get:
+      tags: [mesonet]
+      summary: If row_mode = "array", a JSON object with the keys "index" and "data" is returned. "index" is an array of the data column names and "data" an array of records with columns in the order indicated by the index.
+      description: |
+        Example cURL:
+        - curl -k "https://api.hcdp.ikewai.org/mesonet/db/variables" -H "Authorization: Bearer <API-AUTH-TOKEN>"
+      parameters:
+        - name: var_ids
+          in: query
+          required: false
+          description: A comma separated list of variable IDs to be retrieved
+          schema:
+            type: string
+            pattern: "^\\d{4}(,\\d{4})*$"
+        - name: limit
+          in: query
+          description: The maximum number of records to be retrieved. Values less than 1 will be have no limit
+          required: false
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          description: How many records to offset the result by. This can be combined with the limit parameter to retrieve large groups of data in chunks.
+          required: false
+          schema:
+            type: integer
+        - name: row_mode
+          in: query
+          description: By default data will be returned as an array of JSON objects representing each row of data keyed by column names. If rowMode is "array" the query will return a column index and data as a 2D array.
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: success
+        '401':
+          description: Unauthorized access
+  
+  /mesonet/db/stationMonitor:
+    get:
+      tags: [mesonet]
+      summary: 
+      description: |
+        Example cURL:
+        - curl -k "https://api.hcdp.ikewai.org/mesonet/db/stationMonitor?location=hawaii&var_ids=RF_1_Tot300s,Tair_1_Avg,Tair_2_Avg,RH_1_Avg,RH_2_Avg,SWin_1_Avg,WS_1_Avg,SM_1_Avg,SM_2_Avg,SM_3_Avg,Tsoil_1_Avg,Tsoil_2,Tsoil_3,Tsoil_4,P_1" -H "Authorization: Bearer <API-AUTH-TOKEN>"
+      parameters:
+        - name: location
+          in: query
+          description: The mesonet location to retrieve data for.
+          default: hawaii
+          required: false
+          schema:
+            $ref: '#/components/schemas/location'
+        - name: var_ids
+          in: query
+          required: false
+          description: A comma separated list of variable IDs to get the last value for
+          schema:
+            type: string
+            pattern: "^\\d{4}(,\\d{4})*$"
+      responses:
+        '200':
+          description: success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MesonetStationMonitorData'
+        '404':
+          description: file(s) not found
+        '401':
+          description: Unauthorized access
+
+  /mesonet/db/measurements/email:
+    post:
+      tags: [mesonet]
+      summary: A 202 if the request was processed successfully. The provided email will be sent the requested data or an error message if something goes wrong while generating the data. Data will be provided in a csv of values in wide format (columns timestamp, station ID, variables…)
+      description: |
+        Example cURL:
+        - curl -d '{"email":"<email>","data":{"location":"hawaii","station_ids":["0145","0141","0115"],"var_ids":["RH_1_Min","Tair_2_Max"],"start_date":"2025-04-01T00:00:00-10:00","end_date":"2025-05-01T00:00:00-10:00"}}' -X POST -k -H "Content-Type: application/json" -H "Authorization: Bearer <API-AUTH-TOKEN>" "https://api.hcdp.ikewai.org/mesonet/db/measurements/email"
+      requestBody:
+        $ref: '#/components/requestBodies/MesonetRequest'
+      responses:
+        '202':
+          description: request was successfully submitted
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized access
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  schemas:
+    datatype:
+      type: string
+      enum: [rainfall, temperature, relative_humidity, spi, ndvi_modis, ignition_probability]
+    
+    location:
+      type: string
+      enum: [hawaii, american_samoa]
+      description: The locality of the data to retreive. Data are currently available for Hawaiʻi and American Samoa
+
+    production:
+      type: string
+      enum: [new, legacy]
+      description: |
+        Method used to produce the rainfall data, valid only where datatype = rainfall
+
+        new
+        - Produced using contemporary methods (1990-present)
+        
+        legacy
+        - Historical data produced using older techniques (monthly only, 1920-2012)
+
+    aggregation:
+      type: string
+      enum: [min, max, mean]
+      description: Temperature aggregations, valid only where datatype = temperature
+
+    timescale:
+      type: string
+      enum: [timescale001, timescale003, timescale006, timescale009, timescale012, timescale024, timescale036, timescale048, timescale060]
+      description: The timescale over which the drought is evaluated, valid only where datatype = spi
+
+    period:
+      type: string
+      enum: [month, day]
+
+    extent:
+      type: string
+      enum: [statewide, bi, ka, oa, mn]
+      description: |
+        Statewide is available for all relevant datasets. Only available where location = hawaii
+        
+        statewide
+        - Data for the whole state
+        
+        bi
+        - Data for Hawaii county (Big Island)
+        
+        ka
+        - Data for Kauai County
+        
+        mn
+        - Data for Maui County
+        
+        oa
+        - Data for Honolulu County
+
+    date:
+      type: string
+      description: >
+        ISO 8601 formatted date. Acceptable formats include:
+        - YYYY-MM (e.g., 1990-02)
+        - YYYY-MM-DD (e.g., 2001-01-01)
+        - YYYY-MM-DDTHH:mm:ss (e.g., 2023-07-06T14:30:00)
+        - YYYY-MM-DDTHH:mm:ssZ (UTC timezone)
+        - YYYY-MM-DDTHH:mm:ss±HH:mm (Timezone offset, e.g., -10:00)
+      pattern: '^(((19[0-9]{2}|20[0-9]{2})-(0[1-9]|1[0-2]))|((199[0-9]|20[0-9]{2})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])((T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9])((Z)|([+-](0[0-9]|1[0-4]):[0-5][0-9]))?)?))$'
+
+    filetypes:
+      type: string
+      enum: [data_map, se, anom, anom_se, metadata, station_data]
+      description: |
+        data_map, se, metadata, and station_data are applicable to both rainfall and temperature data
+      
+        data_map
+        - Gridded map data (extension .tif)
+        
+        se
+        - Gridded standard error map (.tif)
+        
+        anom
+        - Gridded anomaly map (.tif)
+        
+        anom_se
+        - Gridded anomaly standard error map (.tif)
+        
+        metadata
+        - Gridded data product metadata (.txt)
+        
+        station_data/components/schemas/prod
+        - Station data (.csv)
+
+    files:
+      type: array
+      items:
+        $ref: '#/components/schemas/filetypes'
+
+    GenzipDataSpecification:
+      type: array
+      items:
+        type: object
+        #required: [datatype, production, period, extent, range, files]
+        properties:
+          location:
+            $ref: '#/components/schemas/location'
+          datatype:
+            $ref: '#/components/schemas/datatype'
+          production:
+            $ref: '#/components/schemas/production'
+          timescale:
+            $ref: '#/components/schemas/timescale'
+          aggregation:
+            $ref: '#/components/schemas/aggregation'
+          period:
+            $ref: '#/components/schemas/period'
+          extent:
+            $ref: '#/components/schemas/extent'
+          range:
+            type: object
+            required: [start, end]
+            properties:
+              start:
+                $ref: '#/components/schemas/date'
+              end:
+                $ref: '#/components/schemas/date'
+          files:
+            $ref: '#/components/schemas/files'
+      description: |
+        An array of JSON objects containing fields that specify the files needed by user
+
+    GenzipRequestHeaderContent:
+      type: object
+      required: [email, data]
+      properties:
+        email:
+          type: string
+          example: 'user@email.com'
+        data:
+          $ref: '#/components/schemas/GenzipDataSpecification'
+      description: |
+        The array of JSON objects that specify the data requested by user and the email to send the zipped data to
+
+    StationMetaData:
+      type: string
+      pattern: "^{'name':'hcdp_station_metadata'}"
+      example: "{'name': 'hcdp_station_metadata'}"
+
+    StationValue:
+      type: string
+      # for now, make value.station_id the only optional group
+      description: |
+        Properties in JSON format, which describe the dataset (a document containing the value of the specified station for the given date) being requested.  
+        
+        e.g. {'name':'hcdp_station_value','value.date':'2022-03-08','value.period':'day','value.fill':'raw','value.datatype':'temperature','value.aggregation':'max'}
+      pattern: "^{'name':'hcdp_station_value'(?:,'value.station_id':'([0-9]{4})'),'value.date':'(((199[0-9]|20[0-9]{2})-(0[1-9]|1[0-2]))|((199[0-9]|20[0-9]{2})-(0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-9]|3[0-1])))','value.datatype':'(temperature|rainfall)','value.period':'(month|day)','value.fill':(raw|partial),(('value.production':'(new|legacy)')|('value.aggregation':'(min|max|mean)'))$}"
+
+    StationTimeSeries:
+      type: string
+      description: |
+        Properties in JSON format, which describe the dataset (data for the specified station between the provided dates) being requested.
+      
+        e.g. {'$and':[{'name':'hcdp_station_value','value.station_id':'1094.2','value.period':'month','value.fill':'partial','value.datatype':'rainfall','value.production':'new'},{'value.date':{'$gte':'1994-01'}},{'value.date':{'$lt':'1995-01'}}]}
+      pattern: "^\\{'\\$and':\\[\\{'name':'test1'(?:,'value\\.station_id':'\\d{4}')?,'value\\.date':'((199[0-9]|20[0-9]{2})-(0[1-9]|1[0-2])|((199[0-9]|20[0-9]{2})-(0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-9]|3[0-1])))','value\\.datatype':'(temperature|rainfall)','value\\.period':'(month|day)','value\\.fill':'(raw|partial)',(('value\\.production':'(new|legacy)')|('value\\.aggregation':'(min|max|mean)'))},\\{'value\\.date':\\{'\\$gte':'((199[0-9]|20[0-9]{2})-(0[1-9]|1[0-2])|((199[0-9]|20[0-9]{2})-(0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-9]|3[0-1])))'\\}\\},\\{'value\\.date':\\{'\\$lt':'((199[0-9]|20[0-9]{2})-(0[1-9]|1[0-2])|((199[0-9]|20[0-9]{2})-(0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-9]|3[0-1])))'\\}\\}\\]\\}$"
+
+    MesonetDataSpecification:
+      type: object
+      properties:
+        station_ids:
+          type: array
+          items:
+            type: string
+            pattern: '^[0-9]{4}$'
+        start_date:
+          $ref: '#/components/schemas/date'
+        end_date:
+          $ref: '#/components/schemas/date'
+        var_ids:
+          type: array
+          items:
+            type: string
+            enum: [RH_1_Min, Tair_2_Max]
+        intervals:
+          type: array
+          items:
+            type: number
+        flags:
+          type: array
+          items:
+            type: string
+        location:
+          type: string
+          enum: [hawaii, american_samoa]
+        offset:
+          type: number
+          default: 0
+        reverse:
+          type: string
+        local_tz:
+          type: string
+
+    MesonetRequestHeaderContent:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          example: 'user@example.com'
+        data:
+          $ref: '#/components/schemas/MesonetDataSpecification'
+        outputName:
+          type: string
+
+    MesonetStationMonitorData:
+      type: object
+      additionalProperties:
+        type: object
+        properties:
+          24hr_>50:
+            type: object
+            properties:
+              RHenc:
+                type: number
+          24hr_>75:
+            type: object
+            properties:
+              RHenc:
+                type: number
+          24hr_avg_diff:
+            type: object
+            properties:
+              RH_Avg:
+                type: number
+              Tair_Avg:
+                type: number
+          24hr_max:
+            type: object
+            properties:
+              RHenc:
+                type: number
+          24hr_min:
+            type: object
+            properties:
+              BattVolt:
+                type: number
+              CellQlt:
+                type: number
+              CellStr:
+                type: number
+
+          24hr_latest:
+            type: object
+            additionalProperties:
+              type: object
+              properties:
+                value:
+                  type: number
+                timestamp:
+                  type: string
+                  format: date-time
+
+          
+
+
+  requestBodies:
+    GenzipRequest:
+      required: true
+      description: Object containing data that references the files requested by the user and their email address to have such files sent to it
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GenzipRequestHeaderContent'
+
+    GenzipRequestWithZipName:
+      required: true
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/GenzipRequestHeaderContent'
+              - type: object
+                properties:
+                  zipName:
+                    type: string
+                    description: The name of the produced zip file
+                    nullable: true
+
+    MesonetRequest:
+      required: true
+      description: Object containing data that references the data requested by the user and their email address to have such data sent to
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MesonetRequestHeaderContent'
+
+  securitySchemes:
+    Authorization:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: Must start with "Bearer " (space after Bearer), followed by your API key

@@ -1,0 +1,128 @@
+1) Full HCDP MCP Tool Design
+
+Instead of mirroring the raw API 1:1, you should create semantic tools that map cleanly to how scientists think.
+
+Below is a clean, production-ready MCP tool set.
+
+🌧️ Raster & Grid Data Tools
+1. get_raster_map
+
+Purpose: Fetch a GeoTIFF raster
+
+type get_raster_map = {
+  date: string;                // "YYYY-MM" or ISO
+  datatype: "rainfall" | "temperature" | "spi" | "ndvi_modis" | "ignition_probability";
+  extent: "statewide" | "bi" | "ka" | "oa" | "mn";
+  period: "month" | "day";
+  production?: "new" | "legacy";
+  aggregation?: "min" | "max" | "mean";
+  timescale?: string;
+};
+2. get_raster_timeseries
+
+Purpose: Time series at a point
+
+type get_raster_timeseries = {
+  start: string;
+  end: string;
+  lat?: number;
+  lng?: number;
+  row?: number;
+  col?: number;
+  datatype: string;
+  extent: string;
+  period: string;
+  production?: string;
+};
+3. batch_raster_download
+
+Purpose: Wrap /genzip
+
+type batch_raster_download = {
+  datasets: Array<{
+    datatype: string;
+    production?: string;
+    aggregation?: string;
+    timescale?: string;
+    period: string;
+    extent: string;
+    start: string;
+    end: string;
+    files: ("data_map" | "metadata" | "anom" | "se")[];
+  }>;
+  delivery: "link" | "email" | "inline";
+  email?: string;
+};
+📁 File Access Tools
+4. list_available_files
+type list_available_files = {
+  datatype: string;
+  extent: string;
+  period: string;
+  start: string;
+  end: string;
+  production?: string;
+};
+5. download_file
+type download_file = {
+  date: string;
+  datatype: string;
+  extent: string;
+  period: string;
+  type?: "data_map" | "anom" | "metadata";
+  production?: string;
+};
+📍 Station Data Tools
+6. query_station_metadata
+type query_station_metadata = {
+  limit?: number;
+  offset?: number;
+};
+7. query_station_value
+type query_station_value = {
+  station_id?: string;
+  date: string;
+  datatype: string;
+  period: string;
+  fill: "raw" | "partial";
+  production?: string;
+  aggregation?: string;
+};
+8. query_station_timeseries
+type query_station_timeseries = {
+  station_id: string;
+  start: string;
+  end: string;
+  datatype: string;
+  period: string;
+  fill: "raw" | "partial";
+  production?: string;
+};
+🌡️ Mesonet Tools
+9. get_mesonet_measurements
+type get_mesonet_measurements = {
+  station_ids?: string[];
+  var_ids?: string[];
+  start_date?: string;
+  end_date?: string;
+  row_mode?: "json" | "wide_json";
+  join_metadata?: boolean;
+};
+10. get_mesonet_stations
+type get_mesonet_stations = {
+  station_ids?: string[];
+};
+11. get_mesonet_variables
+type get_mesonet_variables = {};
+12. get_station_monitor
+type get_station_monitor = {
+  var_ids?: string[];
+};
+13. export_mesonet_csv
+type export_mesonet_csv = {
+  email: string;
+  station_ids: string[];
+  var_ids: string[];
+  start_date: string;
+  end_date: string;
+};
