@@ -75,6 +75,58 @@ HCDP_BASE_URL=<api_base_url>         # Optional: defaults to HCDP production URL
 - `json` - JSON responses (default for metadata/station data)
 - `csv` - Comma-separated values
 
+## Tools Directory Structure
+
+Each MCP tool lives in its own module under `hcdp_mcp_server/tools/`:
+
+| File | Tool |
+|------|------|
+| `constants.py` | Shared constants (island extents, city locations, bounding boxes) and helpers |
+| `timeseries.py` | `get_timeseries_data` — historical climate time series for coordinates |
+| `station_data.py` | `get_station_data` — station-specific climate measurements |
+| `mesonet_data.py` | `get_mesonet_data` — real-time mesonet weather measurements |
+| `mesonet_stations.py` | `get_mesonet_stations` — list available mesonet stations |
+| `mesonet_variables.py` | `get_mesonet_variables` — list mesonet measurement variables |
+| `island_summary.py` | `get_island_current_summary` — island-wide weather aggregation |
+| `city_weather.py` | `get_city_current_weather` — city-level current weather |
+| `compare_historical.py` | `compare_current_vs_historical` — current vs historical comparison |
+| `island_history.py` | `get_island_history_summary` — parallelized island history |
+
+Each tool module exports:
+- **Args model** — Pydantic `BaseModel` for input validation
+- **`tool_definition`** — `mcp.types.Tool` instance
+- **`handle(client, arguments)`** — async handler function
+
+The `tools/__init__.py` provides:
+- `TOOL_REGISTRY` — maps tool names to modules
+- `get_all_tool_definitions()` — returns all Tool objects for registration
+- `dispatch_tool(name, client, arguments)` — routes calls to the correct handler
+
+## Mesonet Rainfall Data Rules
+
+When working with HCDP Mesonet rainfall data, these rules are critical for correctness:
+
+### 1. Always Convert UTC to HST Before Daily Aggregation
+Mesonet timestamps are in UTC. Hawaii Standard Time is UTC−10 with no daylight saving. **Never group raw timestamps by calendar date** — subtract 10 hours first:
+```python
+from datetime import datetime, timedelta
+hst_dt = datetime.fromisoformat(record['timestamp'].replace('Z','')) - timedelta(hours=10)
+day = hst_dt.strftime('%Y-%m-%d')
+```
+Skipping this causes major storm events to appear as 0mm on the storm day and inflates adjacent days.
+
+### 2. Use 5-Minute Totals for Recent Data
+Daily aggregate variables (`RF_1_Tot86400s`) and hourly (`RF_1_Tot3600s`) frequently return empty arrays for dates within the past several months. **Always fall back to summing `RF_1_Tot300s`** (5-minute totals) with the HST conversion above.
+
+### 3. Chunk Date Ranges (1MB Response Limit)
+Querying `RF_1_Tot300s` across multiple stations for more than ~3 days hits the response size limit. **Limit each request to 2–3 day windows** and loop, or reduce the station count per call.
+
+### 4. HCDP Processed Timeseries Lags by Months
+`get_timeseries_data` and gridded rainfall products are not available for recent dates. For anything within the past ~6 months, **always use `get_mesonet_data` with `RF_1_Tot300s`** and sum manually.
+
+### 5. CSV Export Discrepancies
+HCDP CSV exports use a different daily accumulation window that may not align with midnight-to-midnight UTC sums from the raw Mesonet stream. Expect small discrepancies on non-storm days; major totals (peak storm days) should match closely.
+
 ## Key Implementation Notes
 
 - All HTTP requests use 60-120 second timeouts to accommodate large data downloads
