@@ -39,7 +39,7 @@ def _get_storm1_rainfall():
     """Lazy-fetch and cache Storm 1 rainfall data."""
     global _storm1_cache
     if _storm1_cache is None:
-        _storm1_cache = asyncio.get_event_loop().run_until_complete(
+        _storm1_cache = asyncio.run(
             fetch_daily_rainfall_hst(STORM_1_STATIONS, STORM_1_START, STORM_1_END)
         )
     return _storm1_cache
@@ -66,7 +66,7 @@ def _get_storm2_rainfall():
     """Lazy-fetch and cache Storm 2 rainfall data."""
     global _storm2_cache
     if _storm2_cache is None:
-        _storm2_cache = asyncio.get_event_loop().run_until_complete(
+        _storm2_cache = asyncio.run(
             fetch_daily_rainfall_hst(STORM_2_STATIONS, STORM_2_START, STORM_2_END)
         )
     return _storm2_cache
