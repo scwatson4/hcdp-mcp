@@ -33,6 +33,10 @@ hcdp-mcp-server = "hcdp_mcp_server.server:cli_main"
 where = ["."]
 include = ["hcdp_mcp_server*"]
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = [".", "tests"]
+
 [tool.black]
 line-length = 88
 target-version = ["py39"]
