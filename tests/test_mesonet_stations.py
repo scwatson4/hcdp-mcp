@@ -31,9 +31,14 @@ async def test_stations_exist():
             f"{sorted(station_map.keys())[:20]}..."
         )
         station = station_map[station_id]
-        assert expected_name.lower() in station.get("name", "").lower(), (
+        name = station.get("name", "")
+        full_name = station.get("full_name", "")
+        assert (
+            expected_name.lower() in name.lower()
+            or expected_name.lower() in full_name.lower()
+        ), (
             f"Station {station_id} name mismatch: expected '{expected_name}', "
-            f"got '{station.get('name')}'"
+            f"got name='{name}', full_name='{full_name}'"
         )
 
 

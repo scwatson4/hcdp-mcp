@@ -127,6 +127,34 @@ Querying `RF_1_Tot300s` across multiple stations for more than ~3 days hits the 
 ### 5. CSV Export Discrepancies
 HCDP CSV exports use a different daily accumulation window that may not align with midnight-to-midnight UTC sums from the raw Mesonet stream. Expect small discrepancies on non-storm days; major totals (peak storm days) should match closely.
 
+## Mesonet Real-Time Data Behaviors
+
+Discovered during live testing of `get_mesonet_data` (2026-04-01):
+
+### 6. Sort Order Depends on end_date
+- **WITH `end_date`**: results are **ascending** (oldest first). `offset=0` = earliest record in the window.
+- **WITHOUT `end_date`**: results are **descending** (newest first). `offset=0` = most recent record available.
+
+Omit `end_date` when you want the latest reading; include it when you need a historical window in chronological order.
+
+### 7. Pattern for Most Recent Reading
+To get the latest value for a station/variable:
+```python
+start_date = today's date   # YYYY-MM-DD
+end_date = (omit)
+limit = 1
+offset = 0
+```
+This returns the single most recent 5-minute reading, approximately 20–25 minutes behind real time.
+
+### 8. Data Lag ~20–25 Minutes
+Mesonet data is near-real-time, not live. The most recent record is typically 20–30 minutes behind the current clock time. Do not expect sub-minute freshness.
+
+### 9. Prefer Direct Station Queries for Microclimates
+`get_city_current_weather` averages all stations within ~15 km of a city centre. This obscures local microclimates (valleys, upland areas). For precise readings, use `get_mesonet_stations` to locate the nearest individual station, then query it directly with `get_mesonet_data`.
+
+Example: Lyon Arboretum (`station_id=0501`, lat=21.333, lng=−157.8025) gives a far more accurate reading for Mānoa valley than the Honolulu city average.
+
 ## Key Implementation Notes
 
 - All HTTP requests use 60-120 second timeouts to accommodate large data downloads

@@ -92,32 +92,48 @@ async def fetch_daily_rainfall_hst(
     Automatically chunks requests into 2-day windows to stay under the 1MB
     API response limit.
 
+    NOTE on API boundary behaviour: querying end_date=X returns records up to
+    X 00:00:00 UTC only (not through X 23:59 UTC).  To cover the full last HST
+    day (which extends 10 h into the next UTC day) we extend the query window
+    by 2 extra UTC days and let adjacent chunks share their boundary timestamp,
+    deduplicating by (station_id, timestamp) to avoid double-counting.
+
     Returns:
         {station_id: {date_str: total_mm, ...}, ...}
     """
     client = HCDPClient()
     station_ids_str = ",".join(station_ids)
 
-    # Parse date range
     dt_start = datetime.strptime(start_date, "%Y-%m-%d")
     dt_end = datetime.strptime(end_date, "%Y-%m-%d")
+    # Extend by 2 days so the last chunk covers end_date's full HST day
+    # (HST = UTC-10, so end_date 23:55 HST = end_date+1 09:55 UTC; adding one
+    # more day accounts for the API returning only up to end_date 00:00 UTC)
+    dt_end_query = dt_end + timedelta(days=2)
 
-    # Collect all measurements across chunks
     all_measurements = []
+    seen: set[tuple] = set()  # dedup (station_id, timestamp) at chunk boundaries
+
     chunk_start = dt_start
-    while chunk_start <= dt_end:
-        chunk_end = min(chunk_start + timedelta(days=MAX_DAYS_PER_CHUNK - 1), dt_end)
-        chunk_start_str = chunk_start.strftime("%Y-%m-%d")
-        chunk_end_str = chunk_end.strftime("%Y-%m-%d")
+    while chunk_start < dt_end_query:
+        chunk_end = min(chunk_start + timedelta(days=MAX_DAYS_PER_CHUNK), dt_end_query)
 
         measurements = await _fetch_chunk(
-            client, station_ids_str, chunk_start_str, chunk_end_str
+            client,
+            station_ids_str,
+            chunk_start.strftime("%Y-%m-%d"),
+            chunk_end.strftime("%Y-%m-%d"),
         )
 
         if isinstance(measurements, list):
-            all_measurements.extend(measurements)
+            for m in measurements:
+                key = (m.get("station_id"), m.get("timestamp"))
+                if key not in seen:
+                    seen.add(key)
+                    all_measurements.append(m)
 
-        chunk_start = chunk_end + timedelta(days=1)
+        # Adjacent chunks share the boundary timestamp; no +1 so there is no gap
+        chunk_start = chunk_end
 
     # Aggregate by station and HST date
     totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -147,9 +163,14 @@ async def fetch_daily_rainfall_hst(
 
         totals[station][day] += value
 
-    # Convert defaultdicts to regular dicts and round values
+    # Return only dates within the requested HST range; discard overflow from
+    # the extended UTC query window
     return {
-        station: {day: round(total, 2) for day, total in days.items()}
+        station: {
+            day: round(total, 2)
+            for day, total in days.items()
+            if start_date <= day <= end_date
+        }
         for station, days in totals.items()
     }
 
@@ -169,9 +190,12 @@ async def fetch_daily_rainfall_no_hst_correction(
     dt_end = datetime.strptime(end_date, "%Y-%m-%d")
 
     all_measurements = []
+    seen: set[tuple] = set()
+    dt_end_query = dt_end + timedelta(days=2)
+
     chunk_start = dt_start
-    while chunk_start <= dt_end:
-        chunk_end = min(chunk_start + timedelta(days=MAX_DAYS_PER_CHUNK - 1), dt_end)
+    while chunk_start < dt_end_query:
+        chunk_end = min(chunk_start + timedelta(days=MAX_DAYS_PER_CHUNK), dt_end_query)
         measurements = await _fetch_chunk(
             client,
             station_ids_str,
@@ -179,8 +203,12 @@ async def fetch_daily_rainfall_no_hst_correction(
             chunk_end.strftime("%Y-%m-%d"),
         )
         if isinstance(measurements, list):
-            all_measurements.extend(measurements)
-        chunk_start = chunk_end + timedelta(days=1)
+            for m in measurements:
+                key = (m.get("station_id"), m.get("timestamp"))
+                if key not in seen:
+                    seen.add(key)
+                    all_measurements.append(m)
+        chunk_start = chunk_end
 
     totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
 
