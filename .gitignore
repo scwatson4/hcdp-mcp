@@ -71,3 +71,5 @@ MANIFEST
 !sample_data/*.json
 
 # resources/*
+hcdp_mcp_server/__pycache__/__init__.cpython-313.pyc
+hcdp_mcp_server/__pycache__/client.cpython-313.pyc

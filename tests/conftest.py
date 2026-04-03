@@ -1,224 +1,256 @@
-"""Pytest configuration and shared fixtures for HCDP MCP Server tests."""
+"""Pytest configuration and shared fixtures for HCDP MCP storm validation tests.
+
+Ground truth source: rainfall_new_day_statewide_partial_station_data_2026_03.csv
+from the HCDP data export. These are authoritative daily totals (in mm).
+"""
 
 import pytest
-import os
-from unittest.mock import patch
+import asyncio
+import json
+from datetime import datetime, timedelta
+from collections import defaultdict
+
+from hcdp_mcp_server.client import HCDPClient
+from hcdp_mcp_server.server import handle_call_tool
 
 
-@pytest.fixture
-def mock_env_vars():
-    """Mock environment variables for testing."""
-    env_vars = {
-        "HCDP_API_TOKEN": "test_api_token",
-        "HCDP_BASE_URL": "https://test.api.hcdp.com"
-    }
-    with patch.dict(os.environ, env_vars):
-        yield env_vars
+# ---------------------------------------------------------------------------
+# Ground truth constants — do not modify
+# ---------------------------------------------------------------------------
+
+GROUND_TRUTH_STORM_1 = {
+    "0501": {
+        "2026-03-11": 63.75,
+        "2026-03-12": 52.07,
+        "2026-03-13": 197.61,
+        "2026-03-14": 59.18,
+    },
+    "0502": {
+        "2026-03-11": 44.73,
+        "2026-03-12": 30.53,
+        "2026-03-13": 177.29,
+        "2026-03-14": 46.53,
+    },
+}
+
+GROUND_TRUTH_STORM_2 = {
+    "0501": {
+        "2026-03-19": 18.54,
+        "2026-03-20": 148.34,
+        "2026-03-21": 40.13,
+        "2026-03-22": 29.97,
+        "2026-03-23": 135.89,
+    },
+    "0502": {
+        "2026-03-19": 20.07,
+        "2026-03-20": 97.28,
+        "2026-03-21": 22.35,
+        "2026-03-22": 27.64,
+        "2026-03-23": 112.06,
+    },
+}
+
+STATION_NAMES = {"0501": "Lyon Arboretum", "0502": "Nuuanu Res 1"}
+TOLERANCE_MM = 5.0  # acceptable deviation from CSV ground truth
+
+# Station reference:
+# 0501 = Lyon Arboretum (SKN 785.12, elev 151m, Manoa Valley, Oahu)
+# 0502 = Nuuanu Reservoir 1 (SKN 775.11, elev 117m, Nuuanu Valley, Oahu)
+
+# Manoa coordinates for timeseries queries
+MANOA_LAT = 21.3330
+MANOA_LNG = -157.8025
+
+# Maximum days per chunk to stay under 1MB API response limit
+MAX_DAYS_PER_CHUNK = 2
 
 
-@pytest.fixture
-def sample_raster_response():
-    """Sample response for raster data endpoint."""
+# ---------------------------------------------------------------------------
+# Shared helper: fetch and aggregate mesonet rainfall with HST conversion
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_chunk(client, station_ids_str, start_date, end_date):
+    """Fetch RF_1_Tot300s measurements for a single date chunk."""
+    return await client.get_mesonet_data(
+        station_ids=station_ids_str,
+        start_date=start_date,
+        end_date=end_date,
+        var_ids="RF_1_Tot300s",
+    )
+
+
+async def fetch_daily_rainfall_hst(
+    station_ids: list[str], start_date: str, end_date: str
+) -> dict[str, dict[str, float]]:
+    """Query RF_1_Tot300s from get_mesonet_data and sum 5-minute intervals
+    into HST daily totals.
+
+    CRITICAL: subtracts 10 hours from UTC timestamps before grouping by date.
+    Never group on raw UTC date — this causes storm days to appear as 0mm.
+
+    Automatically chunks requests into 2-day windows to stay under the 1MB
+    API response limit.
+
+    NOTE on API boundary behaviour: querying end_date=X returns records up to
+    X 00:00:00 UTC only (not through X 23:59 UTC).  To cover the full last HST
+    day (which extends 10 h into the next UTC day) we extend the query window
+    by 2 extra UTC days and let adjacent chunks share their boundary timestamp,
+    deduplicating by (station_id, timestamp) to avoid double-counting.
+
+    Returns:
+        {station_id: {date_str: total_mm, ...}, ...}
+    """
+    client = HCDPClient()
+    station_ids_str = ",".join(station_ids)
+
+    dt_start = datetime.strptime(start_date, "%Y-%m-%d")
+    dt_end = datetime.strptime(end_date, "%Y-%m-%d")
+    # Extend by 2 days so the last chunk covers end_date's full HST day
+    # (HST = UTC-10, so end_date 23:55 HST = end_date+1 09:55 UTC; adding one
+    # more day accounts for the API returning only up to end_date 00:00 UTC)
+    dt_end_query = dt_end + timedelta(days=2)
+
+    all_measurements = []
+    seen: set[tuple] = set()  # dedup (station_id, timestamp) at chunk boundaries
+
+    chunk_start = dt_start
+    while chunk_start < dt_end_query:
+        chunk_end = min(chunk_start + timedelta(days=MAX_DAYS_PER_CHUNK), dt_end_query)
+
+        measurements = await _fetch_chunk(
+            client,
+            station_ids_str,
+            chunk_start.strftime("%Y-%m-%d"),
+            chunk_end.strftime("%Y-%m-%d"),
+        )
+
+        if isinstance(measurements, list):
+            for m in measurements:
+                key = (m.get("station_id"), m.get("timestamp"))
+                if key not in seen:
+                    seen.add(key)
+                    all_measurements.append(m)
+
+        # Adjacent chunks share the boundary timestamp; no +1 so there is no gap
+        chunk_start = chunk_end
+
+    # Aggregate by station and HST date
+    totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+    for record in all_measurements:
+        station = record.get("station_id", "")
+        if station not in station_ids:
+            continue
+
+        variable = record.get("variable", "")
+        if variable != "RF_1_Tot300s":
+            continue
+
+        value_str = record.get("value")
+        if value_str is None:
+            continue
+        try:
+            value = float(value_str)
+        except (ValueError, TypeError):
+            continue
+
+        # CRITICAL: convert UTC timestamp to HST (UTC-10, no DST)
+        ts = record.get("timestamp", "")
+        utc_dt = datetime.fromisoformat(ts.replace("Z", ""))
+        hst_dt = utc_dt - timedelta(hours=10)
+        day = hst_dt.strftime("%Y-%m-%d")
+
+        totals[station][day] += value
+
+    # Return only dates within the requested HST range; discard overflow from
+    # the extended UTC query window
     return {
-        "status": "success",
-        "data": {
-            "url": "https://example.com/raster.tiff",
-            "download_id": "dl_123"
-        },
-        "metadata": {
-            "variable": "rainfall",
-            "aggregation": "month",
-            "start_date": "2023-01-01",
-            "end_date": "2023-12-31",
-            "location": "hawaii",
-            "units": "mm",
-            "grid_resolution": "250m",
-            "projection": "EPSG:4326"
+        station: {
+            day: round(total, 2)
+            for day, total in days.items()
+            if start_date <= day <= end_date
         }
+        for station, days in totals.items()
     }
 
 
-@pytest.fixture
-def sample_timeseries_response():
-    """Sample response for timeseries data endpoint."""
+async def fetch_daily_rainfall_no_hst_correction(
+    station_ids: list[str], start_date: str, end_date: str
+) -> dict[str, dict[str, float]]:
+    """Same as fetch_daily_rainfall_hst but deliberately groups on raw UTC date.
+
+    This exists solely to demonstrate the UTC offset bug: storm rainfall is
+    misattributed to adjacent days when the HST correction is skipped.
+    """
+    client = HCDPClient()
+    station_ids_str = ",".join(station_ids)
+
+    dt_start = datetime.strptime(start_date, "%Y-%m-%d")
+    dt_end = datetime.strptime(end_date, "%Y-%m-%d")
+
+    all_measurements = []
+    seen: set[tuple] = set()
+    dt_end_query = dt_end + timedelta(days=2)
+
+    chunk_start = dt_start
+    while chunk_start < dt_end_query:
+        chunk_end = min(chunk_start + timedelta(days=MAX_DAYS_PER_CHUNK), dt_end_query)
+        measurements = await _fetch_chunk(
+            client,
+            station_ids_str,
+            chunk_start.strftime("%Y-%m-%d"),
+            chunk_end.strftime("%Y-%m-%d"),
+        )
+        if isinstance(measurements, list):
+            for m in measurements:
+                key = (m.get("station_id"), m.get("timestamp"))
+                if key not in seen:
+                    seen.add(key)
+                    all_measurements.append(m)
+        chunk_start = chunk_end
+
+    totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+    for record in all_measurements:
+        station = record.get("station_id", "")
+        if station not in station_ids:
+            continue
+        variable = record.get("variable", "")
+        if variable != "RF_1_Tot300s":
+            continue
+        value_str = record.get("value")
+        if value_str is None:
+            continue
+        try:
+            value = float(value_str)
+        except (ValueError, TypeError):
+            continue
+
+        # BUG: grouping on raw UTC date without HST conversion
+        ts = record.get("timestamp", "")
+        utc_dt = datetime.fromisoformat(ts.replace("Z", ""))
+        day = utc_dt.strftime("%Y-%m-%d")
+
+        totals[station][day] += value
+
     return {
-        "data": [
-            {"date": "2023-01-01", "value": 125.5, "unit": "mm"},
-            {"date": "2023-02-01", "value": 98.2, "unit": "mm"},
-            {"date": "2023-03-01", "value": 156.8, "unit": "mm"},
-            {"date": "2023-04-01", "value": 203.4, "unit": "mm"},
-            {"date": "2023-05-01", "value": 89.7, "unit": "mm"},
-            {"date": "2023-06-01", "value": 45.3, "unit": "mm"}
-        ],
-        "metadata": {
-            "latitude": 21.3099,
-            "longitude": -157.8581,
-            "variable": "rainfall",
-            "aggregation": "month",
-            "location": "hawaii"
-        }
+        station: {day: round(total, 2) for day, total in days.items()}
+        for station, days in totals.items()
     }
 
 
-@pytest.fixture
-def sample_station_response():
-    """Sample response for station data endpoint."""
-    return {
-        "stations": [
-            {
-                "id": "STAT001",
-                "name": "Honolulu International Airport",
-                "latitude": 21.3187,
-                "longitude": -157.9224,
-                "elevation": 5.0,
-                "measurements": [
-                    {"date": "2023-01-01", "value": 125.5, "quality": "good"},
-                    {"date": "2023-02-01", "value": 98.2, "quality": "good"},
-                    {"date": "2023-03-01", "value": 156.8, "quality": "fair"}
-                ]
-            },
-            {
-                "id": "STAT002", 
-                "name": "Haleakala Summit",
-                "latitude": 20.7097,
-                "longitude": -156.2533,
-                "elevation": 3055.0,
-                "measurements": [
-                    {"date": "2023-01-01", "value": 45.2, "quality": "good"},
-                    {"date": "2023-02-01", "value": 32.1, "quality": "good"},
-                    {"date": "2023-03-01", "value": 67.4, "quality": "poor"}
-                ]
-            }
-        ],
-        "metadata": {
-            "variable": "rainfall",
-            "aggregation": "month",
-            "location": "hawaii",
-            "total_stations": 2
-        }
-    }
+# ---------------------------------------------------------------------------
+# Helper for calling MCP tools and parsing JSON response
+# ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def sample_mesonet_response():
-    """Sample response for mesonet data endpoint."""
-    return {
-        "measurements": [
-            {
-                "timestamp": "2023-01-01T00:00:00Z",
-                "station": "MESA001",
-                "station_name": "Kona Airport Mesonet",
-                "value": 15.2,
-                "unit": "m/s",
-                "quality": "good"
-            },
-            {
-                "timestamp": "2023-01-01T01:00:00Z",
-                "station": "MESA001", 
-                "station_name": "Kona Airport Mesonet",
-                "value": 12.8,
-                "unit": "m/s",
-                "quality": "good"
-            },
-            {
-                "timestamp": "2023-01-01T02:00:00Z",
-                "station": "MESA001",
-                "station_name": "Kona Airport Mesonet", 
-                "value": 18.5,
-                "unit": "m/s",
-                "quality": "fair"
-            }
-        ],
-        "metadata": {
-            "variable": "wind_speed",
-            "station": "MESA001",
-            "aggregation": "day",
-            "location": "hawaii",
-            "total_measurements": 24
-        }
-    }
-
-
-@pytest.fixture
-def sample_data_package_response():
-    """Sample response for data package generation endpoint."""
-    return {
-        "package_id": "pkg_abc123",
-        "status": "processing",
-        "estimated_completion": "2023-01-01T12:00:00Z",
-        "download_url": None,
-        "email_delivery": True,
-        "package_size_mb": 125.6,
-        "included_files": [
-            "rainfall_2023_01_hawaii_month.tiff",
-            "rainfall_2023_02_hawaii_month.tiff", 
-            "rainfall_2023_03_hawaii_month.tiff",
-            "metadata.json"
-        ]
-    }
-
-
-@pytest.fixture
-def valid_variables():
-    """List of valid climate variables supported by HCDP API."""
-    return [
-        "rainfall",
-        "temp_mean", 
-        "temp_min",
-        "temp_max",
-        "relative_humidity",
-        "spi",
-        "ndvi_modis",
-        "ignition_probability"
-    ]
-
-
-@pytest.fixture
-def valid_locations():
-    """List of valid locations supported by HCDP API."""
-    return ["hawaii", "american_samoa"]
-
-
-@pytest.fixture
-def valid_aggregations():
-    """List of valid temporal aggregations supported by HCDP API."""
-    return ["day", "month", "year"]
-
-
-@pytest.fixture
-def valid_formats():
-    """List of valid output formats supported by HCDP API."""
-    return ["tiff", "json", "csv"]
-
-
-@pytest.fixture
-def hawaii_coordinates():
-    """Sample coordinates within Hawaii bounds."""
-    return [
-        (21.3099, -157.8581),  # Honolulu
-        (20.7097, -156.2533),  # Haleakala
-        (19.7297, -155.0900),  # Hilo
-        (21.9743, -159.3650),  # Lihue, Kauai
-        (20.8893, -156.6906),  # Kahului, Maui
-    ]
-
-
-@pytest.fixture
-def american_samoa_coordinates():
-    """Sample coordinates within American Samoa bounds."""
-    return [
-        (-14.3064, -170.6944),  # Pago Pago
-        (-14.2846, -170.7365),  # Leone
-        (-14.2393, -170.6348),  # Fagatogo
-    ]
-
-
-@pytest.fixture
-def sample_date_ranges():
-    """Sample date ranges for testing."""
-    return [
-        ("2023-01-01", "2023-01-31"),  # Single month
-        ("2023-01-01", "2023-12-31"),  # Full year
-        ("2022-06-01", "2023-05-31"),  # Multi-year span
-        ("2023-07-15", "2023-07-15"),  # Single day
-    ]
+async def call_tool(name: str, arguments: dict) -> dict | list:
+    """Call an MCP tool via handle_call_tool and return the parsed JSON."""
+    result = await handle_call_tool(name, arguments)
+    assert len(result) >= 1, f"Tool {name} returned no content"
+    text = result[0].text
+    # If the tool returned an error string, return it as-is for assertions
+    if text.startswith("Error calling HCDP API:"):
+        return {"_error": text}
+    return json.loads(text)
