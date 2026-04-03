@@ -58,12 +58,10 @@ async def handle(
         return {
             "error": f"'{args.city}' is a neighborhood/small town, not a major city.",
             "action_required": (
-                f"For accurate weather in {args.city}, use these steps: "
-                f"1) Call get_mesonet_stations to find stations near "
-                f"lat={coords['lat']}, lng={coords['lng']}. "
-                f"2) Pick the 1-2 closest stations by distance. "
-                f"3) Call get_mesonet_data with those station_ids and "
-                f"var_ids='Tair_1_Avg,RH_1_Avg,RF_1_Tot300s' (or use 'weather' friendly name)."
+                f"For accurate weather in {args.city}: "
+                f"1) Call get_nearby_stations(lat={coords['lat']}, lng={coords['lng']}) to find the closest stations. "
+                f"2) Call get_mesonet_data with those station_ids and "
+                f"var_ids='Tair_1_Avg,RH_1_Avg,RF_1_Tot300s'."
             ),
             "coordinates": {"lat": coords["lat"], "lng": coords["lng"]},
         }

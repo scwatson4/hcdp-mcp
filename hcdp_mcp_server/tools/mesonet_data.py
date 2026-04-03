@@ -60,6 +60,15 @@ async def handle(
     Data lags real time by ~20–25 minutes.
     """
     args = GetMesonetDataArgs(**arguments)
+
+    # Catch unresolved template variables from agent frameworks
+    if args.station_ids and "${" in args.station_ids:
+        raise ValueError(
+            f"Invalid station_ids: '{args.station_ids}'. "
+            "Provide actual station IDs like '0501,0502', not template variables. "
+            "Use get_nearby_stations to find station IDs first."
+        )
+
     result = await client.get_mesonet_data(
         station_ids=args.station_ids,
         start_date=args.start_date,

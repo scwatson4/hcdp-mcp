@@ -37,6 +37,7 @@ from .tools.station_data import GetStationDataArgs  # noqa: F401
 from .tools.mesonet_data import GetMesonetDataArgs  # noqa: F401
 from .tools.mesonet_stations import GetMesonetStationsArgs  # noqa: F401
 from .tools.mesonet_variables import GetMesonetVariablesArgs  # noqa: F401
+from .tools.nearby_stations import GetNearbyStationsArgs  # noqa: F401
 from .tools.island_summary import GetIslandSummaryArgs  # noqa: F401
 from .tools.city_weather import GetCityWeatherArgs  # noqa: F401
 from .tools.compare_historical import CompareHistoryArgs  # noqa: F401
@@ -46,7 +47,7 @@ SERVER_INSTRUCTIONS = """HCDP (Hawaii Climate Data Portal) - Tool Routing Guide
 
 CURRENT/REAL-TIME WEATHER (mesonet stations, updated every 15 min):
   Major city weather (honolulu, hilo, kona, kahului, lihue, kapolei) -> get_city_current_weather
-  Neighborhood/small town (manoa, kaneohe, lahaina, etc.) -> use get_mesonet_stations to find 1-2 nearest stations, then get_mesonet_data
+  Neighborhood/small town (manoa, kaneohe, pahoa, etc.) -> get_nearby_stations(lat, lng) to find closest stations, then get_mesonet_data
   Weather summary for an island -> get_island_current_summary
   Raw measurements by station ID -> get_mesonet_data
 
