@@ -65,7 +65,7 @@ async def handle(
         "location": {"lat": args.lat, "lng": args.lng},
         "stations": nearest,
         "note": (
-            "Stations beyond 5km may not be representative of the target location. "
+            "Stations beyond 3km may not be representative of the target location. "
             "Prefer using only the closest 1-2 stations for neighborhood-level accuracy."
         ),
     }
