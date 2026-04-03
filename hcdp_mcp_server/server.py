@@ -27,6 +27,7 @@ from .tools.constants import (  # noqa: F401
     CITY_ALIASES,
     calculate_distance,
     resolve_mesonet_datatype,
+    validate_mesonet_datatype,
     normalize_city_name,
     resolve_extent_from_coords,
 )
@@ -59,7 +60,7 @@ DISCOVERY (use these first when unsure):
 
 TIPS:
 - City names use snake_case: honolulu, manoa, kaneohe, lahaina, lanai_city
-- Friendly datatype names accepted for current weather: 'temperature', 'rainfall', 'humidity', 'wind', 'solar'
+- Friendly datatype names accepted for current weather: 'weather' (multi-variable summary), 'temperature', 'rainfall', 'humidity', 'wind', 'solar'
 - For raw mesonet var_ids (e.g. Tair_1_Avg), call get_mesonet_variables first
 - Dates: YYYY-MM-DD for mesonet/station tools, YYYY-MM-DD for timeseries start/end
 - Historical/gridded datatypes: 'rainfall', 'temperature' (with aggregation), 'relative_humidity', 'spi', 'ndvi_modis', 'ignition_probability'

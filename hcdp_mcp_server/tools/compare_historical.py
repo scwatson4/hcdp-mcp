@@ -9,7 +9,7 @@ from .constants import (
     CITY_LOCATIONS,
     ISLAND_EXTENTS,
     calculate_distance,
-    resolve_mesonet_datatype,
+    validate_mesonet_datatype,
     normalize_city_name,
 )
 
@@ -42,7 +42,7 @@ async def handle(
     if not city_data:
         raise ValueError(f"Unknown city: {args.city}")
 
-    resolved_var = resolve_mesonet_datatype(args.datatype)
+    resolved_var = validate_mesonet_datatype(args.datatype)
 
     # 1. Get Current Data
     stations = await client.get_mesonet_stations()

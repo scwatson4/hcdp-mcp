@@ -5,7 +5,7 @@ from typing import Sequence
 from mcp.types import Tool, TextContent, ImageContent, EmbeddedResource
 from pydantic import BaseModel, Field
 
-from .constants import ISLAND_EXTENTS, ISLAND_BOUNDS, resolve_mesonet_datatype
+from .constants import ISLAND_EXTENTS, ISLAND_BOUNDS, validate_mesonet_datatype
 
 
 class GetIslandSummaryArgs(BaseModel):
@@ -31,7 +31,7 @@ async def handle(
 ) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
     """Handle get_island_current_summary tool call."""
     args = GetIslandSummaryArgs(**arguments)
-    resolved_var = resolve_mesonet_datatype(args.datatype)
+    resolved_var = validate_mesonet_datatype(args.datatype)
 
     # 1. Get all stations
     stations = await client.get_mesonet_stations()
@@ -88,6 +88,7 @@ async def handle(
             "island": args.island,
             "stations_checked": len(station_ids),
             "message": f"No recent data for {args.datatype} ({resolved_var}) found",
+            "hint": "Valid datatype names: temperature, rainfall, humidity, wind, solar, weather. Or use a raw var_id like 'Tair_1_Avg'.",
         }
 
     avg_val = sum(vals) / len(vals)

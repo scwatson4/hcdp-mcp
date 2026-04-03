@@ -114,6 +114,7 @@ MESONET_DATATYPE_MAP = {
     "pressure": "P_1",
     "soil_moisture": "SM_1_Avg",
     "soil_temperature": "Tsoil_1_Avg",
+    "weather": "Tair_1_Avg,RH_1_Avg,RF_1_Tot300s",
 }
 
 CITY_ALIASES = {
@@ -138,6 +139,20 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 def resolve_mesonet_datatype(raw: str) -> str:
     """Map friendly name to mesonet var_id, or pass through as raw var_id."""
     return MESONET_DATATYPE_MAP.get(raw.lower().strip(), raw)
+
+
+def validate_mesonet_datatype(raw: str) -> str:
+    """Resolve and validate a mesonet datatype. Raises ValueError for invalid inputs."""
+    resolved = resolve_mesonet_datatype(raw)
+    if raw.lower().strip() not in MESONET_DATATYPE_MAP and "_" not in raw:
+        valid_names = sorted(set(MESONET_DATATYPE_MAP.keys()))
+        raise ValueError(
+            f"Unknown datatype '{raw}'. "
+            f"Valid friendly names: {', '.join(valid_names)}. "
+            f"Or use a raw variable ID (e.g. 'Tair_1_Avg'). "
+            f"Call get_mesonet_variables to list all valid IDs."
+        )
+    return resolved
 
 
 def normalize_city_name(raw: str) -> str:

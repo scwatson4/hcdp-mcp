@@ -25,7 +25,10 @@ class GetMesonetDataArgs(BaseModel):
         default="hawaii", description="Location ('hawaii' or 'american_samoa')"
     )
     intervals: str | None = Field(default=None, description="Time intervals")
-    limit: int | None = Field(default=None, description="Limit number of results")
+    limit: int | None = Field(
+        default=None,
+        description="Max records to return. Applies across ALL stations and variables combined. For N stations with M var_ids, use limit >= N*M.",
+    )
     offset: int | None = Field(default=None, description="Offset for pagination")
     join_metadata: bool = Field(default=True, description="Include metadata in results")
 
@@ -38,6 +41,7 @@ USAGE NOTES:
 - WITHOUT end_date: results are DESCENDING (newest first). For latest reading: start_date=today, no end_date, limit=1.
 - WITH end_date: results are ASCENDING (oldest first).
 - Data lags real time by ~20-25 minutes.
+- For recent rainfall, use RF_1_Tot300s (5-min totals), NOT RF_1_Tot86400s (daily aggregate, often empty for recent dates).
 """,
     inputSchema=GetMesonetDataArgs.model_json_schema(),
 )
