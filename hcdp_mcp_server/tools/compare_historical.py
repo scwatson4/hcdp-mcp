@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from .constants import (
     CITY_LOCATIONS,
+    MAJOR_CITIES,
     ISLAND_EXTENTS,
     calculate_distance,
     validate_mesonet_datatype,
@@ -18,7 +19,10 @@ class CompareHistoryArgs(BaseModel):
     """Arguments for comparing current vs historical weather."""
 
     city: str = Field(
-        description="City/town name in snake_case (e.g. 'honolulu', 'manoa', 'kaneohe', 'lahaina')"
+        description=(
+            "Major city name in snake_case. Supported: "
+            "honolulu, hilo, kona, kahului, lihue, kapolei, kaunakakai, pago_pago."
+        )
     )
     datatype: str = Field(
         description="Variable: 'temperature', 'rainfall', or 'humidity'. Mapped to API names internally."
@@ -40,7 +44,14 @@ async def handle(
     city_key = normalize_city_name(args.city)
     city_data = CITY_LOCATIONS.get(city_key)
     if not city_data:
-        raise ValueError(f"Unknown city: {args.city}")
+        raise ValueError(f"Unknown location: {args.city}")
+
+    if city_key not in MAJOR_CITIES:
+        raise ValueError(
+            f"'{args.city}' is a neighborhood/small town. "
+            f"compare_current_vs_historical only supports major cities: "
+            f"{', '.join(sorted(MAJOR_CITIES))}."
+        )
 
     resolved_var = validate_mesonet_datatype(args.datatype)
 

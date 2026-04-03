@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from .constants import (
     CITY_LOCATIONS,
+    MAJOR_CITIES,
     calculate_distance,
     validate_mesonet_datatype,
     normalize_city_name,
@@ -17,7 +18,11 @@ class GetCityWeatherArgs(BaseModel):
     """Arguments for city-specific weather."""
 
     city: str = Field(
-        description="City/town name in snake_case (e.g. 'honolulu', 'manoa', 'kaneohe', 'lahaina')"
+        description=(
+            "Major city name in snake_case. Supported: "
+            "honolulu, hilo, kona, kahului, lihue, kapolei, kaunakakai, pago_pago. "
+            "For neighborhoods (manoa, kaneohe, wahiawa, etc.) use get_mesonet_data instead."
+        )
     )
     datatype: str = Field(
         description="Mesonet variable: friendly name ('temperature','rainfall','humidity','wind','solar','weather') or raw var_id ('Tair_1_Avg'). Use 'weather' for a multi-variable summary (temperature + humidity + rainfall)."
@@ -27,11 +32,11 @@ class GetCityWeatherArgs(BaseModel):
 tool_definition = Tool(
     name="get_city_current_weather",
     description=(
-        "Current weather for a named city or town. Averages nearby mesonet stations within 15km. "
-        "Use datatype='weather' for a multi-variable summary (temperature, humidity, rainfall). "
-        "For neighborhoods or microclimate-sensitive areas (valleys, uplands), prefer using "
-        "get_mesonet_stations to find the 1-3 closest stations, then query them directly with "
-        "get_mesonet_data for more accurate readings."
+        "Current weather for a MAJOR city, averaged from mesonet stations within 15km. "
+        "Only for: honolulu, hilo, kona, kahului, lihue, kapolei, kaunakakai, pago_pago. "
+        "For neighborhoods or small towns (manoa, kaneohe, lahaina, etc.), instead use "
+        "get_mesonet_stations to find the 1-2 nearest stations, then get_mesonet_data to "
+        "query them directly."
     ),
     inputSchema=GetCityWeatherArgs.model_json_schema(),
 )
@@ -45,7 +50,23 @@ async def handle(
     city_key = normalize_city_name(args.city)
     city_data = CITY_LOCATIONS.get(city_key)
     if not city_data:
-        raise ValueError(f"Unknown city: {args.city}")
+        raise ValueError(f"Unknown location: {args.city}")
+
+    # Redirect neighborhoods/small towns to get_mesonet_data
+    if city_key not in MAJOR_CITIES:
+        coords = city_data
+        return {
+            "error": f"'{args.city}' is a neighborhood/small town, not a major city.",
+            "action_required": (
+                f"For accurate weather in {args.city}, use these steps: "
+                f"1) Call get_mesonet_stations to find stations near "
+                f"lat={coords['lat']}, lng={coords['lng']}. "
+                f"2) Pick the 1-2 closest stations by distance. "
+                f"3) Call get_mesonet_data with those station_ids and "
+                f"var_ids='Tair_1_Avg,RH_1_Avg,RF_1_Tot300s' (or use 'weather' friendly name)."
+            ),
+            "coordinates": {"lat": coords["lat"], "lng": coords["lng"]},
+        }
 
     # Resolve user-friendly datatype to mesonet variable ID(s)
     var_id = validate_mesonet_datatype(args.datatype)

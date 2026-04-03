@@ -43,6 +43,20 @@ CITY_LOCATIONS = {
     "pago_pago": {"lat": -14.2794, "lng": -170.7006, "island": "tutuila"},
 }
 
+# Major cities with enough mesonet station coverage for meaningful multi-station
+# averaging (used by get_city_current_weather). Neighborhoods and small towns
+# should use get_mesonet_data with the 1-2 nearest stations instead.
+MAJOR_CITIES = {
+    "honolulu",
+    "hilo",
+    "kona",
+    "kahului",
+    "lihue",
+    "kapolei",
+    "kaunakakai",
+    "pago_pago",
+}
+
 ISLAND_REPRESENTATIVE_POINTS = {
     "oahu": {
         "Honolulu (South)": {"lat": 21.3069, "lng": -157.8583},
