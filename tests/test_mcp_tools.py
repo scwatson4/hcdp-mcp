@@ -1,72 +1,69 @@
-"""Test MCP server tools."""
+"""Test MCP server tool registration.
 
-import asyncio
-from hcdp_mcp_server.server import app
+Validates that all 10 expected tools are registered with the MCP server
+and that no tools are missing or unexpectedly added.
+"""
 
-async def test_mcp_tools():
-    """Test that all MCP tools are properly registered."""
-    
-    print("Testing MCP server tool registration...")
-    
-    # Import the handler function directly
-    from hcdp_mcp_server.server import handle_list_tools
-    
-    # Get list of tools
+import pytest
+
+from hcdp_mcp_server.server import handle_list_tools
+
+EXPECTED_TOOL_NAMES = [
+    "get_timeseries_data",
+    "get_station_data",
+    "get_mesonet_data",
+    "get_mesonet_stations",
+    "get_mesonet_variables",
+    "get_nearby_stations",
+    "get_island_current_summary",
+    "get_city_current_weather",
+    "compare_current_vs_historical",
+    "get_island_history_summary",
+]
+
+
+@pytest.mark.asyncio
+async def test_all_tools_registered():
+    """Assert all 10 expected tools are registered with the MCP server."""
     tools = await handle_list_tools()
-    
-    print(f"\nRegistered Tools ({len(tools)}):")
-    print("="*50)
-    
-    for i, tool in enumerate(tools, 1):
-        print(f"{i:2d}. {tool.name}")
-        print(f"    Description: {tool.description}")
-        print(f"    Schema keys: {list(tool.inputSchema.get('properties', {}).keys())}")
-        print()
-    
-    expected_tools = [
-        "get_climate_raster",
-        "get_timeseries_data", 
-        "get_station_data",
-        "get_mesonet_data",
-        "generate_data_package_email",
-        "generate_data_package_instant_link",
-        "generate_data_package_instant_content",
-        "generate_data_package_splitlink",
-        "list_production_files",
-        "retrieve_production_file",
-        "get_mesonet_stations",
-        "get_mesonet_variables",
-        "get_mesonet_station_monitor",
-        "email_mesonet_measurements"
-    ]
-    
-    registered_tools = [tool.name for tool in tools]
-    
-    print("TOOL REGISTRATION CHECK:")
-    print("="*50)
-    
-    missing_tools = []
-    for expected_tool in expected_tools:
-        if expected_tool in registered_tools:
-            print(f"✓ {expected_tool}")
-        else:
-            print(f"✗ {expected_tool} - MISSING")
-            missing_tools.append(expected_tool)
-    
-    extra_tools = []
-    for registered_tool in registered_tools:
-        if registered_tool not in expected_tools:
-            extra_tools.append(registered_tool)
-    
-    if extra_tools:
-        print(f"\nExtra tools (not expected): {extra_tools}")
-    
-    if missing_tools:
-        print(f"\nMissing tools: {missing_tools}")
-    else:
-        print("\n✓ All expected tools are registered!")
-    
-    return len(tools), missing_tools
+    registered = [tool.name for tool in tools]
 
-if __name__ == "__main__":
-    asyncio.run(test_mcp_tools())
+    assert len(tools) == len(EXPECTED_TOOL_NAMES), (
+        f"Expected {len(EXPECTED_TOOL_NAMES)} tools, got {len(tools)}. "
+        f"Registered: {registered}"
+    )
+
+    for name in EXPECTED_TOOL_NAMES:
+        assert name in registered, f"Tool '{name}' not registered"
+
+
+@pytest.mark.asyncio
+async def test_no_extra_tools():
+    """Assert no unexpected tools are registered."""
+    tools = await handle_list_tools()
+    registered = {tool.name for tool in tools}
+    expected = set(EXPECTED_TOOL_NAMES)
+    extra = registered - expected
+    assert len(extra) == 0, f"Unexpected tools: {extra}"
+
+
+@pytest.mark.asyncio
+async def test_tools_have_descriptions():
+    """Assert every registered tool has a non-empty description."""
+    tools = await handle_list_tools()
+    for tool in tools:
+        assert tool.description, f"Tool '{tool.name}' has no description"
+        assert (
+            len(tool.description) > 10
+        ), f"Tool '{tool.name}' description too short: {tool.description}"
+
+
+@pytest.mark.asyncio
+async def test_tools_have_input_schemas():
+    """Assert every registered tool has an inputSchema."""
+    tools = await handle_list_tools()
+    for tool in tools:
+        assert tool.inputSchema is not None, f"Tool '{tool.name}' has no inputSchema"
+        assert (
+            "properties" in tool.inputSchema or "type" in tool.inputSchema
+        ), f"Tool '{tool.name}' inputSchema missing properties or type"

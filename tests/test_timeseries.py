@@ -36,33 +36,29 @@ async def test_timeseries_unavailable_for_recent():
         },
     )
 
-    # The result may be an empty dict, an empty list, or an error dict.
+    # The result may be an empty dict, an empty list, an error dict,
+    # or actual data if the processing has caught up.
     # Any of these is acceptable — the key point is no exception was raised.
     if isinstance(result, dict):
         if "_error" in result:
             logger.info(
-                "Timeseries for March 2026 returned error (expected): %s",
+                "Timeseries for recent month returned error (expected): %s",
                 result["_error"],
             )
         else:
-            # If it's a data dict, it should be empty or have no values
-            data_values = [
-                v for v in result.values()
-                if v is not None and v != -9999
-            ]
+            data_values = [v for v in result.values() if v is not None and v != -9999]
             logger.info(
-                "Timeseries for March 2026 returned %d values (expected 0 "
-                "due to ~6-12 month processing lag).",
+                "Timeseries for recent month returned %d values. "
+                "Empty is expected due to ~6-12 month processing lag, "
+                "but data may have caught up.",
                 len(data_values),
             )
-            assert len(data_values) == 0, (
-                f"Expected empty timeseries for March 2026 (data lags by "
-                f"~6-12 months), but got {len(data_values)} values. If this "
-                f"test fails, the processed data may have caught up."
-            )
+            # Data availability varies — we accept either empty or populated
+            # results. The test validates the call succeeds without error.
     elif isinstance(result, list):
-        assert len(result) == 0, (
-            f"Expected empty timeseries for March 2026, got {len(result)} items"
+        logger.info(
+            "Timeseries for recent month returned list with %d items.",
+            len(result),
         )
 
 
@@ -88,17 +84,15 @@ async def test_timeseries_available_for_historical():
         },
     )
 
-    assert not isinstance(result, list) or len(result) > 0, (
-        "Expected non-empty timeseries for 2024"
-    )
+    assert (
+        not isinstance(result, list) or len(result) > 0
+    ), "Expected non-empty timeseries for 2024"
     if isinstance(result, dict):
-        assert "_error" not in result, (
-            f"Timeseries query for 2024 returned error: {result.get('_error')}"
-        )
+        assert (
+            "_error" not in result
+        ), f"Timeseries query for 2024 returned error: {result.get('_error')}"
         # Should have at least some monthly values
-        data_values = [
-            v for v in result.values() if v is not None and v != -9999
-        ]
+        data_values = [v for v in result.values() if v is not None and v != -9999]
         assert len(data_values) > 0, (
             f"Expected non-empty timeseries data for 2024 at Manoa. "
             f"Got dict with keys: {list(result.keys())[:10]}"
